@@ -118,6 +118,12 @@ export default function Home() {
               Log
             </Link>
             <Link
+              href="/debug"
+              className="px-2 py-1 rounded text-xs text-white/50 hover:text-white/80 hover:bg-white/5 transition-all"
+            >
+              Debug
+            </Link>
+            <Link
               href="/locations"
               className="px-2 py-1 rounded text-xs text-white/50 hover:text-white/80 hover:bg-white/5 transition-all"
             >
