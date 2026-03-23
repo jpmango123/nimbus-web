@@ -90,6 +90,7 @@ export async function GET() {
     // 4. Send to Claude API for analysis (data + visual)
     let aiDataAnalysis = '';
     let aiVisualAnalysis = '';
+    let aiBlendingAnalysis = '';
     const claudeKey = process.env.CLAUDE_API_KEY;
 
     if (claudeKey) {
@@ -115,12 +116,19 @@ export async function GET() {
       } else {
         aiVisualAnalysis = 'No screenshots captured. Visual analysis will be available once Chromium is available in the deployment environment.';
       }
+
+      // Blending & data processing analysis
+      try {
+        aiBlendingAnalysis = await analyzeBlending(claudeKey, sql, weekAgo);
+      } catch (err) {
+        aiBlendingAnalysis = `Blending analysis unavailable: ${err}`;
+      }
     } else {
       aiDataAnalysis = 'Claude API key not configured.';
       aiVisualAnalysis = 'Claude API key not configured.';
     }
 
-    const combinedAnalysis = `## Data Accuracy Analysis\n${aiDataAnalysis}\n\n## Visual & Graph Analysis\n${aiVisualAnalysis}`;
+    const combinedAnalysis = `## Data Accuracy Analysis\n${aiDataAnalysis}\n\n## Visual & Graph Analysis\n${aiVisualAnalysis}\n\n## Blending & Data Processing\n${aiBlendingAnalysis}`;
 
     // 5. Get recent AI changelog entries
     const recentChanges = await sql`
@@ -130,11 +138,20 @@ export async function GET() {
     `;
 
     // 6. Build and send email
-    const emailHtml = buildEmailHtml(accuracy, comparisons, aiDataAnalysis, aiVisualAnalysis, screenshots, recentChanges);
+    const emailHtml = buildEmailHtml(accuracy, comparisons, aiDataAnalysis, aiVisualAnalysis, aiBlendingAnalysis, screenshots, recentChanges);
     const subject = `Nimbus Nightly Report — ${now.toLocaleDateString('en-US', {
       month: 'long', day: 'numeric', year: 'numeric',
     })}`;
     const sent = await sendNightlyReport(subject, emailHtml);
+
+    // 6b. Log blending analysis
+    if (aiBlendingAnalysis && aiBlendingAnalysis.length > 50 && !aiBlendingAnalysis.includes('unavailable') && !aiBlendingAnalysis.includes('not configured')) {
+      await sql`
+        INSERT INTO ai_changelog (category, summary, details, status)
+        VALUES ('accuracy', ${`Blending analysis: model weights and data processing review`},
+                ${aiBlendingAnalysis.slice(0, 5000)}, 'applied')
+      `;
+    }
 
     // 7. Log visual findings to changelog
     if (aiVisualAnalysis && aiVisualAnalysis.length > 50 && !aiVisualAnalysis.includes('unavailable') && !aiVisualAnalysis.includes('not configured')) {
@@ -248,6 +265,74 @@ Focus on what looks wrong or could look better — don't just describe what you 
   return data.content?.[0]?.text || 'No visual analysis generated';
 }
 
+// MARK: - Blending & Data Processing Analysis
+
+type NeonSql = ReturnType<typeof getDb>;
+
+async function analyzeBlending(apiKey: string, sql: NeonSql, weekAgo: string): Promise<string> {
+  // Pull recent snapshots that include per-model data
+  const snapshots = await sql`
+    SELECT location_id, target_date, predicted_high, predicted_low,
+           predicted_precip_accum, raw_json
+    FROM forecast_snapshots
+    WHERE captured_at > ${weekAgo}
+      AND raw_json::text LIKE '%perModel%'
+    ORDER BY captured_at DESC
+    LIMIT 30
+  `;
+
+  if (!snapshots.length) {
+    return 'No per-model comparison data available yet. Will analyze once the audit has captured a few rounds of HRRR/NBM/GFS data side by side.';
+  }
+
+  // Build a summary of model divergence
+  const modelComparisons: string[] = [];
+  for (const snap of snapshots.slice(0, 10)) {
+    const raw = snap.raw_json as Record<string, unknown>;
+    const perModel = raw?.perModel as Record<string, { high: number; low: number; precipAccum: number }> | undefined;
+    if (!perModel) continue;
+
+    const parts = [];
+    if (perModel.hrrr) parts.push(`HRRR H${Math.round(perModel.hrrr.high)}/L${Math.round(perModel.hrrr.low)} precip ${perModel.hrrr.precipAccum?.toFixed(2)}"`);
+    if (perModel.nbm) parts.push(`NBM H${Math.round(perModel.nbm.high)}/L${Math.round(perModel.nbm.low)} precip ${perModel.nbm.precipAccum?.toFixed(2)}"`);
+    if (perModel.gfs) parts.push(`GFS H${Math.round(perModel.gfs.high)}/L${Math.round(perModel.gfs.low)} precip ${perModel.gfs.precipAccum?.toFixed(2)}"`);
+
+    modelComparisons.push(
+      `${snap.target_date}: Blended H${Math.round(snap.predicted_high as number)}/L${Math.round(snap.predicted_low as number)} precip ${(snap.predicted_precip_accum as number)?.toFixed(2)}" | ${parts.join(' | ')}`
+    );
+  }
+
+  const prompt = `You are a meteorologist and data scientist evaluating how a weather app blends multiple weather models.
+
+## Current Blending Strategy
+The app uses Open-Meteo to fetch 3 NWP models and blends them with these weights by forecast horizon:
+- 0-6h ahead: HRRR=60%, NBM=30%, GFS=10% (HRRR assimilates radar, best near-term)
+- 6-18h: HRRR=40%, NBM=40%, GFS=20%
+- 18-48h: HRRR=15%, NBM=55%, GFS=30%
+- 48h+: NBM=40%, GFS=60% (HRRR drops out)
+- 192h+: GFS=100%
+
+## Per-Model vs Blended Output (Recent Snapshots)
+${modelComparisons.join('\n')}
+
+## Your Analysis
+Please evaluate as a meteorologist:
+
+1. **Model Divergence** — How much do HRRR, NBM, GFS disagree? When they disagree significantly, which model tends to be right?
+2. **Weight Optimization** — Are the current blend weights optimal? Should they be adjusted? Consider that HRRR excels at convective/precip timing, NBM is calibrated for temperature, GFS has global coverage.
+3. **Precipitation Handling** — Is the app treating precipitation probability and accumulation correctly? Are there artifacts from averaging probabilities across models (e.g., 3 models at 0%, 0%, 90% averaging to 30% instead of recognizing one model sees a storm)?
+4. **Data Processing Improvements** — Suggest specific improvements to how the app processes the raw model data:
+   - Should it use ensemble spreads differently?
+   - Should precipitation use max-of-models instead of weighted average?
+   - Should temperature blending use a different strategy than precip blending?
+   - Are there bias corrections that could be applied per-model?
+5. **Missing Data Handling** — When one model is unavailable, the others get redistributed weights. Is this the right approach or should there be a fallback hierarchy?
+
+Be specific with numbers and implementation suggestions. These will be used to improve the iOS and web app code.`;
+
+  return await callClaudeText(apiKey, prompt);
+}
+
 // MARK: - Prompts
 
 function buildAuditPrompt(accuracy: AccuracyRow[], comparisons: SnapshotRow[]): string {
@@ -285,6 +370,7 @@ function buildEmailHtml(
   comparisons: SnapshotRow[],
   aiDataAnalysis: string,
   aiVisualAnalysis: string,
+  aiBlendingAnalysis: string,
   screenshots: ScreenshotResult[],
   recentChanges: Record<string, unknown>[]
 ): string {
@@ -348,6 +434,13 @@ function buildEmailHtml(
     <h2>🎨 Visual Analysis</h2>
     <div class="card">
       <div class="analysis">${aiVisualAnalysis.replace(/\n/g, '<br>')}</div>
+    </div>
+    ` : ''}
+
+    ${aiBlendingAnalysis && aiBlendingAnalysis.length > 50 ? `
+    <h2>⚙️ Model Blending & Data Processing</h2>
+    <div class="card">
+      <div class="analysis">${aiBlendingAnalysis.replace(/\n/g, '<br>')}</div>
     </div>
     ` : ''}
 

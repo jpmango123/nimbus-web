@@ -291,6 +291,59 @@ export async function fetchBlendedWeather(location: LocationInfo): Promise<Weath
   };
 }
 
+// MARK: - Per-Model Data (for blending analysis)
+
+export interface PerModelDailyData {
+  high: number;
+  low: number;
+  precipProb: number;
+  precipAccum: number;
+  condition: string;
+  model: string;
+}
+
+/** Fetch individual HRRR, NBM, GFS daily forecasts for comparison/analysis */
+export async function fetchPerModelData(lat: number, lon: number): Promise<{
+  hrrr: PerModelDailyData[] | null;
+  nbm: PerModelDailyData[] | null;
+  gfs: PerModelDailyData[] | null;
+}> {
+  async function fetchModelDaily(modelId: string, modelName: string): Promise<PerModelDailyData[] | null> {
+    const url = `${BASE_URL}?latitude=${lat}&longitude=${lon}` +
+      `&models=${modelId}` +
+      `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,weather_code` +
+      `&temperature_unit=fahrenheit&precipitation_unit=inch` +
+      `&forecast_days=7&timezone=auto`;
+
+    try {
+      const res = await fetch(url, { next: { revalidate: 900 } });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const d = data.daily;
+      if (!d?.time?.length) return null;
+
+      return d.time.map((_: string, i: number) => ({
+        high: d.temperature_2m_max[i],
+        low: d.temperature_2m_min[i],
+        precipProb: (d.precipitation_probability_max?.[i] || 0) / 100,
+        precipAccum: d.precipitation_sum[i] || 0,
+        condition: String(d.weather_code[i]),
+        model: modelName,
+      }));
+    } catch {
+      return null;
+    }
+  }
+
+  const [hrrr, nbm, gfs] = await Promise.all([
+    fetchModelDaily('ncep_hrrr_conus', 'HRRR'),
+    fetchModelDaily('ncep_nbm_conus', 'NBM'),
+    fetchModelDaily('gfs_seamless', 'GFS'),
+  ]);
+
+  return { hrrr, nbm, gfs };
+}
+
 // MARK: - Historical Weather (for accuracy comparison)
 
 export async function fetchHistoricalWeather(
