@@ -1,13 +1,14 @@
 // =============================================================================
 // GET /api/report — Nightly AI audit report (runs at 8pm ET daily)
-// Analyzes accuracy, generates email, optionally applies fixes
+// Analyzes accuracy + visual appearance, generates email, logs findings
 // =============================================================================
 
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { sendNightlyReport } from '@/lib/email';
+import { captureAllScreenshots, ScreenshotResult } from '@/lib/screenshot';
 
-export const maxDuration = 120; // Allow up to 2 min for AI analysis
+export const maxDuration = 300; // 5 min for screenshots + AI analysis
 
 interface AccuracyRow {
   location_name: string;
@@ -28,6 +29,11 @@ interface SnapshotRow {
   actual_high: number;
   actual_low: number;
   actual_precip: number;
+}
+
+interface LocationRow {
+  id: number;
+  name: string;
 }
 
 export async function GET() {
@@ -71,45 +77,79 @@ export async function GET() {
       LIMIT 50
     ` as SnapshotRow[];
 
-    // 3. Send to Claude API for analysis (if key configured)
-    let aiAnalysis = '';
-    const claudeKey = process.env.CLAUDE_API_KEY;
-
-    if (claudeKey && accuracy.length > 0) {
-      try {
-        const prompt = buildAuditPrompt(accuracy, comparisons);
-        aiAnalysis = await callClaudeAPI(claudeKey, prompt);
-      } catch (err) {
-        aiAnalysis = `AI analysis unavailable: ${err}`;
-      }
-    } else if (!claudeKey) {
-      aiAnalysis = 'Claude API key not configured. Set CLAUDE_API_KEY in environment variables.';
-    } else {
-      aiAnalysis = 'No accuracy data available yet. The audit cron needs to run for a few days to collect comparison data.';
+    // 3. Capture screenshots of all charts and widgets
+    const locations = await sql`SELECT id, name FROM locations ORDER BY sort_order` as LocationRow[];
+    let screenshots: ScreenshotResult[] = [];
+    try {
+      screenshots = await captureAllScreenshots(locations);
+      console.log(`[REPORT] Captured ${screenshots.length} screenshots`);
+    } catch (err) {
+      console.error('[REPORT] Screenshot capture failed:', err);
     }
 
-    // 4. Get recent AI changelog entries
+    // 4. Send to Claude API for analysis (data + visual)
+    let aiDataAnalysis = '';
+    let aiVisualAnalysis = '';
+    const claudeKey = process.env.CLAUDE_API_KEY;
+
+    if (claudeKey) {
+      // Data accuracy analysis
+      if (accuracy.length > 0) {
+        try {
+          const prompt = buildAuditPrompt(accuracy, comparisons);
+          aiDataAnalysis = await callClaudeText(claudeKey, prompt);
+        } catch (err) {
+          aiDataAnalysis = `Data analysis unavailable: ${err}`;
+        }
+      } else {
+        aiDataAnalysis = 'No accuracy data available yet. The audit cron needs to run for a few days to collect comparison data.';
+      }
+
+      // Visual analysis with screenshots
+      if (screenshots.length > 0) {
+        try {
+          aiVisualAnalysis = await callClaudeVision(claudeKey, screenshots);
+        } catch (err) {
+          aiVisualAnalysis = `Visual analysis unavailable: ${err}`;
+        }
+      } else {
+        aiVisualAnalysis = 'No screenshots captured. Visual analysis will be available once Chromium is available in the deployment environment.';
+      }
+    } else {
+      aiDataAnalysis = 'Claude API key not configured.';
+      aiVisualAnalysis = 'Claude API key not configured.';
+    }
+
+    const combinedAnalysis = `## Data Accuracy Analysis\n${aiDataAnalysis}\n\n## Visual & Graph Analysis\n${aiVisualAnalysis}`;
+
+    // 5. Get recent AI changelog entries
     const recentChanges = await sql`
       SELECT * FROM ai_changelog
       WHERE created_at > ${new Date(now.getTime() - 24 * 3600000).toISOString()}
       ORDER BY created_at DESC
     `;
 
-    // 5. Build email HTML
-    const emailHtml = buildEmailHtml(accuracy, comparisons, aiAnalysis, recentChanges);
-
-    // 6. Send email
+    // 6. Build and send email
+    const emailHtml = buildEmailHtml(accuracy, comparisons, aiDataAnalysis, aiVisualAnalysis, screenshots, recentChanges);
     const subject = `Nimbus Nightly Report — ${now.toLocaleDateString('en-US', {
       month: 'long', day: 'numeric', year: 'numeric',
     })}`;
-
     const sent = await sendNightlyReport(subject, emailHtml);
 
-    // 7. Log the report
+    // 7. Log visual findings to changelog
+    if (aiVisualAnalysis && aiVisualAnalysis.length > 50 && !aiVisualAnalysis.includes('unavailable') && !aiVisualAnalysis.includes('not configured')) {
+      await sql`
+        INSERT INTO ai_changelog (category, summary, details, status)
+        VALUES ('visual', ${`Visual audit: ${screenshots.length} screenshots analyzed`},
+                ${aiVisualAnalysis.slice(0, 5000)}, 'applied')
+      `;
+    }
+
+    // 8. Log the report
     await sql`
       INSERT INTO ai_changelog (category, summary, details, status)
-      VALUES ('report', ${`Nightly report generated — ${accuracy.length} locations analyzed`},
-              ${aiAnalysis.slice(0, 5000)}, 'applied')
+      VALUES ('report', ${`Nightly report — ${accuracy.length} locations, ${screenshots.length} screenshots`},
+              ${combinedAnalysis.slice(0, 5000)}, 'applied')
     `;
 
     return NextResponse.json({
@@ -117,7 +157,9 @@ export async function GET() {
       emailSent: sent,
       locationsAnalyzed: accuracy.length,
       comparisonsFound: comparisons.length,
-      aiAnalysisLength: aiAnalysis.length,
+      screenshotsCaptured: screenshots.length,
+      aiDataAnalysisLength: aiDataAnalysis.length,
+      aiVisualAnalysisLength: aiVisualAnalysis.length,
     });
   } catch (err) {
     console.error('[REPORT] Error:', err);
@@ -125,9 +167,9 @@ export async function GET() {
   }
 }
 
-// MARK: - Claude API Call
+// MARK: - Claude API Calls
 
-async function callClaudeAPI(apiKey: string, prompt: string): Promise<string> {
+async function callClaudeText(apiKey: string, prompt: string): Promise<string> {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -142,13 +184,71 @@ async function callClaudeAPI(apiKey: string, prompt: string): Promise<string> {
     }),
   });
 
-  if (!res.ok) {
-    throw new Error(`Claude API ${res.status}: ${await res.text()}`);
-  }
-
+  if (!res.ok) throw new Error(`Claude API ${res.status}: ${await res.text()}`);
   const data = await res.json();
   return data.content?.[0]?.text || 'No analysis generated';
 }
+
+/** Send screenshots to Claude vision for visual evaluation */
+async function callClaudeVision(apiKey: string, screenshots: ScreenshotResult[]): Promise<string> {
+  // Build message with images + analysis prompt
+  const content: Array<{ type: string; source?: { type: string; media_type: string; data: string }; text?: string }> = [];
+
+  // Add each screenshot as an image
+  for (const shot of screenshots.slice(0, 6)) { // Limit to 6 images to stay within token budget
+    content.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: 'image/png',
+        data: shot.imageBase64,
+      },
+    });
+    content.push({
+      type: 'text',
+      text: `[Screenshot: ${shot.chartType} — ${shot.locationName}]`,
+    });
+  }
+
+  // Add the analysis prompt
+  content.push({
+    type: 'text',
+    text: `You are a weather app UI/UX expert reviewing the Nimbus Weather web app. These screenshots show the dashboard and widget views.
+
+Please evaluate:
+
+1. **Chart Readability** — Are the temperature curves smooth and easy to follow? Are labels readable? Is the Y-axis scaling appropriate?
+2. **Precipitation Graphs** — Do the precipitation area fills look correct? Are the gradient opacities working well? Do the Catmull-Rom curves look smooth or jagged?
+3. **Color & Contrast** — Is the temperature-to-color mapping working correctly (blue=cold, green=mild, yellow=warm, red=hot)? Are precip overlays visible but not overwhelming?
+4. **Widget Appearance** — Do the small/medium/large widgets look like proper iOS widgets? Are they the right proportions? Is text legible at widget sizes?
+5. **Data Display** — Are there any obvious data glitches (e.g., impossible temperatures, flat lines that should have variation, missing data)?
+6. **Layout & Spacing** — Are charts well-spaced? Any overlapping elements? Any charts that look cramped or too spread out?
+7. **Specific Improvements** — List concrete, actionable changes (e.g., "increase precipitation area opacity from 0.35 to 0.45", "add more Y-axis labels to the daily chart", "the hourly chart needs night shading").
+
+Be specific with numbers and values. These recommendations will be used to improve both the web app and the iOS app.
+Focus on what looks wrong or could look better — don't just describe what you see.`,
+  });
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 3000,
+      messages: [{ role: 'user', content }],
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Claude Vision API ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  return data.content?.[0]?.text || 'No visual analysis generated';
+}
+
+// MARK: - Prompts
 
 function buildAuditPrompt(accuracy: AccuracyRow[], comparisons: SnapshotRow[]): string {
   return `You are analyzing weather forecast accuracy for the Nimbus weather app.
@@ -178,12 +278,24 @@ Please analyze:
 Keep your response concise and actionable. Focus on what can be fixed in code.`;
 }
 
+// MARK: - Email HTML
+
 function buildEmailHtml(
   accuracy: AccuracyRow[],
   comparisons: SnapshotRow[],
-  aiAnalysis: string,
+  aiDataAnalysis: string,
+  aiVisualAnalysis: string,
+  screenshots: ScreenshotResult[],
   recentChanges: Record<string, unknown>[]
 ): string {
+  // Embed up to 3 screenshots inline in the email
+  const inlineImages = screenshots.slice(0, 3).map(s =>
+    `<div style="margin: 8px 0;">
+      <div style="color: #64748b; font-size: 11px; margin-bottom: 4px;">${s.chartType} — ${s.locationName}</div>
+      <img src="data:image/png;base64,${s.imageBase64}" style="max-width: 100%; border-radius: 8px; border: 1px solid #1e293b;" />
+    </div>`
+  ).join('');
+
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -222,10 +334,22 @@ function buildEmailHtml(
     </table>
     ` : '<div class="card"><p style="color: #64748b;">No accuracy data yet. The system needs a few days of data collection.</p></div>'}
 
-    <h2>🤖 AI Analysis</h2>
+    <h2>🤖 Data Analysis</h2>
     <div class="card">
-      <div class="analysis">${aiAnalysis.replace(/\n/g, '<br>')}</div>
+      <div class="analysis">${aiDataAnalysis.replace(/\n/g, '<br>')}</div>
     </div>
+
+    ${screenshots.length > 0 ? `
+    <h2>📊 Graph Screenshots</h2>
+    <div class="card">
+      ${inlineImages}
+    </div>
+
+    <h2>🎨 Visual Analysis</h2>
+    <div class="card">
+      <div class="analysis">${aiVisualAnalysis.replace(/\n/g, '<br>')}</div>
+    </div>
+    ` : ''}
 
     ${recentChanges.length > 0 ? `
     <h2>🔧 Changes Made Today</h2>
@@ -238,7 +362,7 @@ function buildEmailHtml(
 
     <div class="footer">
       <p>Nimbus Weather — Automated Nightly Report</p>
-      <p>Data from Open-Meteo (HRRR/NBM/GFS blended) + NWS alerts</p>
+      <p>Data: Open-Meteo (HRRR/NBM/GFS blended) + NWS alerts | Visual: Puppeteer + Claude Vision</p>
     </div>
   </div>
 </body>
