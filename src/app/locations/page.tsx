@@ -1,32 +1,55 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { SavedLocation } from '@/lib/weather/types';
 import Link from 'next/link';
 
+interface SearchResult {
+  name: string;
+  latitude: number;
+  longitude: number;
+  timezone: string;
+  fullAddress: string;
+}
+
 export default function LocationsPage() {
   const [locations, setLocations] = useState<SavedLocation[]>([]);
-  const [name, setName] = useState('');
-  const [lat, setLat] = useState('');
-  const [lon, setLon] = useState('');
-  const [tz, setTz] = useState('America/New_York');
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     fetch('/api/locations')
       .then(r => r.json())
-      .then(data => {
-        if (Array.isArray(data)) setLocations(data);
-      })
+      .then(data => { if (Array.isArray(data)) setLocations(data); })
       .catch(() => {});
   }, []);
 
-  const addLocation = async () => {
-    if (!name || !lat || !lon) {
-      setMessage('Name, latitude, and longitude are required');
-      return;
-    }
+  // Debounced search as user types
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (query.length < 2) { setResults([]); return; }
+
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const res = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`);
+        const data = await res.json();
+        if (Array.isArray(data)) setResults(data);
+      } catch {
+        setResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 400);
+
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [query]);
+
+  const addLocation = async (result: SearchResult) => {
     setSaving(true);
     setMessage('');
     try {
@@ -34,22 +57,23 @@ export default function LocationsPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name,
-          latitude: parseFloat(lat),
-          longitude: parseFloat(lon),
-          timezone: tz,
+          name: result.name,
+          latitude: result.latitude,
+          longitude: result.longitude,
+          timezone: result.timezone,
         }),
       });
       if (res.ok) {
         const loc = await res.json();
         setLocations(prev => [...prev, loc]);
-        setName(''); setLat(''); setLon('');
-        setMessage('Location added!');
+        setQuery('');
+        setResults([]);
+        setMessage(`Added ${result.name}!`);
       } else {
-        setMessage('Failed to add location. Is the database configured?');
+        setMessage('Failed to add. Is the database configured?');
       }
     } catch {
-      setMessage('Failed to connect. Set up DATABASE_URL in Vercel.');
+      setMessage('Failed to connect.');
     } finally {
       setSaving(false);
     }
@@ -64,14 +88,14 @@ export default function LocationsPage() {
     }
   };
 
-  const presets = [
-    { name: 'Boston, MA', lat: 42.3601, lon: -71.0589, tz: 'America/New_York' },
-    { name: 'New York, NY', lat: 40.7128, lon: -74.0060, tz: 'America/New_York' },
-    { name: 'Chicago, IL', lat: 41.8781, lon: -87.6298, tz: 'America/Chicago' },
-    { name: 'Los Angeles, CA', lat: 34.0522, lon: -118.2437, tz: 'America/Los_Angeles' },
-    { name: 'Miami, FL', lat: 25.7617, lon: -80.1918, tz: 'America/New_York' },
-    { name: 'Denver, CO', lat: 39.7392, lon: -104.9903, tz: 'America/Denver' },
-    { name: 'Seattle, WA', lat: 47.6062, lon: -122.3321, tz: 'America/Los_Angeles' },
+  const presets: SearchResult[] = [
+    { name: 'Boston, MA', latitude: 42.3601, longitude: -71.0589, timezone: 'America/New_York', fullAddress: '' },
+    { name: 'New York, NY', latitude: 40.7128, longitude: -74.0060, timezone: 'America/New_York', fullAddress: '' },
+    { name: 'Chicago, IL', latitude: 41.8781, longitude: -87.6298, timezone: 'America/Chicago', fullAddress: '' },
+    { name: 'Los Angeles, CA', latitude: 34.0522, longitude: -118.2437, timezone: 'America/Los_Angeles', fullAddress: '' },
+    { name: 'Miami, FL', latitude: 25.7617, longitude: -80.1918, timezone: 'America/New_York', fullAddress: '' },
+    { name: 'Denver, CO', latitude: 39.7392, longitude: -104.9903, timezone: 'America/Denver', fullAddress: '' },
+    { name: 'Seattle, WA', latitude: 47.6062, longitude: -122.3321, timezone: 'America/Los_Angeles', fullAddress: '' },
   ];
 
   return (
@@ -84,28 +108,46 @@ export default function LocationsPage() {
       </nav>
 
       <div className="max-w-2xl mx-auto px-4 py-6 space-y-6">
-        {/* Current locations */}
+        {/* Search */}
         <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-          <h2 className="text-sm font-bold text-white/50 uppercase tracking-wider mb-3">Saved Locations</h2>
-          {locations.length === 0 && (
-            <div className="text-white/30 text-sm py-4 text-center">
-              No saved locations. Add one below or use a preset.
+          <h2 className="text-sm font-bold text-white/50 uppercase tracking-wider mb-3">Add a City</h2>
+          <div className="relative">
+            <input
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search for a city, state, or address..."
+              className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-sm text-white placeholder-white/30 focus:outline-none focus:border-blue-500/50 transition-colors"
+              autoFocus
+            />
+            {searching && (
+              <div className="absolute right-3 top-3.5 text-white/30 text-xs animate-pulse">Searching...</div>
+            )}
+          </div>
+
+          {/* Search results */}
+          {results.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {results.map((r, i) => (
+                <button
+                  key={i}
+                  onClick={() => addLocation(r)}
+                  disabled={saving}
+                  className="w-full text-left px-4 py-3 rounded-xl bg-white/5 hover:bg-blue-500/10 border border-white/5 hover:border-blue-500/20 transition-all disabled:opacity-50"
+                >
+                  <div className="text-sm text-white/90 font-medium">{r.name}</div>
+                  <div className="text-xs text-white/40 mt-0.5">{r.fullAddress}</div>
+                </button>
+              ))}
             </div>
           )}
-          {locations.map(loc => (
-            <div key={loc.id} className="flex items-center justify-between py-2 border-b border-white/5 last:border-0">
-              <div>
-                <div className="text-sm text-white/80">{loc.name}</div>
-                <div className="text-xs text-white/30">{loc.latitude.toFixed(4)}, {loc.longitude.toFixed(4)}</div>
-              </div>
-              <button
-                onClick={() => deleteLocation(loc.id)}
-                className="text-xs text-red-400/60 hover:text-red-400 transition-colors"
-              >
-                Remove
-              </button>
-            </div>
-          ))}
+
+          {query.length >= 2 && !searching && results.length === 0 && (
+            <div className="mt-2 text-xs text-white/30 text-center py-3">No results found</div>
+          )}
+
+          {message && (
+            <div className="mt-2 text-xs text-blue-300 text-center">{message}</div>
+          )}
         </div>
 
         {/* Quick presets */}
@@ -115,8 +157,9 @@ export default function LocationsPage() {
             {presets.map(p => (
               <button
                 key={p.name}
-                onClick={() => { setName(p.name); setLat(String(p.lat)); setLon(String(p.lon)); setTz(p.tz); }}
-                className="px-3 py-1.5 rounded-full text-xs bg-white/5 text-white/60 hover:bg-white/10 hover:text-white/80 border border-white/10 transition-all"
+                onClick={() => addLocation(p)}
+                disabled={saving}
+                className="px-3 py-1.5 rounded-full text-xs bg-white/5 text-white/60 hover:bg-blue-500/10 hover:text-blue-300 border border-white/10 hover:border-blue-500/20 transition-all disabled:opacity-50"
               >
                 {p.name}
               </button>
@@ -124,51 +167,32 @@ export default function LocationsPage() {
           </div>
         </div>
 
-        {/* Add form */}
-        <div className="rounded-2xl bg-white/5 border border-white/10 p-4 space-y-3">
-          <h2 className="text-sm font-bold text-white/50 uppercase tracking-wider">Add Location</h2>
-          <input
-            value={name}
-            onChange={e => setName(e.target.value)}
-            placeholder="City name (e.g. Boston, MA)"
-            className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/30 focus:outline-none focus:border-blue-500/50"
-          />
-          <div className="grid grid-cols-2 gap-3">
-            <input
-              value={lat}
-              onChange={e => setLat(e.target.value)}
-              placeholder="Latitude"
-              className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/30 focus:outline-none focus:border-blue-500/50"
-            />
-            <input
-              value={lon}
-              onChange={e => setLon(e.target.value)}
-              placeholder="Longitude"
-              className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/30 focus:outline-none focus:border-blue-500/50"
-            />
-          </div>
-          <select
-            value={tz}
-            onChange={e => setTz(e.target.value)}
-            className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-white focus:outline-none focus:border-blue-500/50"
-          >
-            <option value="America/New_York">Eastern</option>
-            <option value="America/Chicago">Central</option>
-            <option value="America/Denver">Mountain</option>
-            <option value="America/Los_Angeles">Pacific</option>
-            <option value="Pacific/Honolulu">Hawaii</option>
-            <option value="America/Anchorage">Alaska</option>
-          </select>
-          <button
-            onClick={addLocation}
-            disabled={saving}
-            className="w-full py-2 rounded-lg bg-blue-500/20 text-blue-300 border border-blue-500/30 text-sm font-medium hover:bg-blue-500/30 transition-all disabled:opacity-50"
-          >
-            {saving ? 'Saving...' : 'Add Location'}
-          </button>
-          {message && (
-            <div className="text-xs text-white/50 text-center">{message}</div>
+        {/* Saved locations */}
+        <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
+          <h2 className="text-sm font-bold text-white/50 uppercase tracking-wider mb-3">
+            Saved Locations ({locations.length})
+          </h2>
+          {locations.length === 0 && (
+            <div className="text-white/30 text-sm py-4 text-center">
+              No saved locations yet. Search above or use a quick preset.
+            </div>
           )}
+          {locations.map(loc => (
+            <div key={loc.id} className="flex items-center justify-between py-3 border-b border-white/5 last:border-0">
+              <div>
+                <div className="text-sm text-white/80 font-medium">{loc.name}</div>
+                <div className="text-xs text-white/30 tabular-nums">
+                  {loc.latitude.toFixed(4)}, {loc.longitude.toFixed(4)} · {loc.timezone.split('/')[1]?.replace('_', ' ')}
+                </div>
+              </div>
+              <button
+                onClick={() => deleteLocation(loc.id)}
+                className="text-xs text-red-400/50 hover:text-red-400 transition-colors px-2 py-1"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
         </div>
       </div>
     </main>
