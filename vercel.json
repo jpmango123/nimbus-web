@@ -1,12 +1,1 @@
-{
-  "crons": [
-    {
-      "path": "/api/audit",
-      "schedule": "0 12 * * *"
-    },
-    {
-      "path": "/api/report",
-      "schedule": "0 1 * * *"
-    }
-  ]
-}
+{}

@@ -1,0 +1,34 @@
+name: Nimbus Cron Jobs
+
+on:
+  schedule:
+    # Audit: collect forecast data every 3 hours
+    - cron: '0 */3 * * *'
+    # Report: nightly AI analysis at 1am UTC (8pm ET)
+    - cron: '0 1 * * *'
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+jobs:
+  audit:
+    if: github.event.schedule == '0 */3 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger audit data collection
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 120 \
+            "${{ secrets.VERCEL_APP_URL }}/api/audit")
+          echo "Audit response: $response"
+          if [ "$response" -ge 500 ]; then exit 1; fi
+
+  report:
+    if: github.event.schedule == '0 1 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger nightly AI report
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 180 \
+            "${{ secrets.VERCEL_APP_URL }}/api/report")
+          echo "Report response: $response"
+          if [ "$response" -ge 500 ]; then exit 1; fi
