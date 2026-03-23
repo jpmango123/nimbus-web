@@ -1,65 +1,152 @@
-import Image from "next/image";
+'use client';
+
+// =============================================================================
+// Main Dashboard — Multi-location weather display
+// =============================================================================
+
+import { useState, useEffect, useCallback } from 'react';
+import { WeatherData, SavedLocation } from '@/lib/weather/types';
+import WeatherPage from '@/components/weather/WeatherPage';
+import Link from 'next/link';
+
+// Default locations when database isn't configured yet
+const DEFAULT_LOCATIONS: SavedLocation[] = [
+  { id: 1, name: 'Boston, MA', latitude: 42.3601, longitude: -71.0589, timezone: 'America/New_York', sortOrder: 0 },
+  { id: 2, name: 'New York, NY', latitude: 40.7128, longitude: -74.0060, timezone: 'America/New_York', sortOrder: 1 },
+  { id: 3, name: 'Los Angeles, CA', latitude: 34.0522, longitude: -118.2437, timezone: 'America/Los_Angeles', sortOrder: 2 },
+];
 
 export default function Home() {
+  const [locations, setLocations] = useState<SavedLocation[]>(DEFAULT_LOCATIONS);
+  const [selectedIdx, setSelectedIdx] = useState(0);
+  const [weatherCache, setWeatherCache] = useState<Record<number, WeatherData>>({});
+  const [loading, setLoading] = useState(false);
+  const [unit, setUnit] = useState<'F' | 'C'>('F');
+
+  // Load locations from DB
+  useEffect(() => {
+    fetch('/api/locations')
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          setLocations(data);
+        }
+      })
+      .catch(() => {
+        // Use defaults if DB not configured
+      });
+  }, []);
+
+  // Fetch weather for selected location
+  const fetchWeather = useCallback(async (loc: SavedLocation) => {
+    if (weatherCache[loc.id]) return;
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({
+        lat: String(loc.latitude),
+        lon: String(loc.longitude),
+        name: loc.name,
+        tz: loc.timezone,
+      });
+      const res = await fetch(`/api/weather?${params}`);
+      const data = await res.json();
+      if (data && !data.error) {
+        setWeatherCache(prev => ({ ...prev, [loc.id]: data }));
+      }
+    } catch (err) {
+      console.error('Weather fetch failed:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [weatherCache]);
+
+  useEffect(() => {
+    if (locations[selectedIdx]) {
+      fetchWeather(locations[selectedIdx]);
+    }
+  }, [selectedIdx, locations, fetchWeather]);
+
+  const currentLocation = locations[selectedIdx];
+  const currentWeather = currentLocation ? weatherCache[currentLocation.id] : null;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <main className="min-h-screen">
+      {/* Nav bar */}
+      <nav className="sticky top-0 z-50 backdrop-blur-xl bg-[#0d1521]/80 border-b border-white/5">
+        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <h1 className="text-lg font-semibold">
+              <span className="text-blue-400">☁️</span> Nimbus
+            </h1>
+          </div>
+
+          {/* Location tabs */}
+          <div className="flex items-center gap-1 overflow-x-auto">
+            {locations.map((loc, i) => (
+              <button
+                key={loc.id}
+                onClick={() => setSelectedIdx(i)}
+                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all whitespace-nowrap ${
+                  i === selectedIdx
+                    ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                    : 'text-white/50 hover:text-white/70 hover:bg-white/5'
+                }`}
+              >
+                {loc.name.split(',')[0]}
+              </button>
+            ))}
+          </div>
+
+          {/* Controls */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setUnit(u => u === 'F' ? 'C' : 'F')}
+              className="px-2 py-1 rounded text-xs text-white/50 hover:text-white/80 hover:bg-white/5 transition-all"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              °{unit}
+            </button>
+            <Link
+              href="/widget"
+              className="px-2 py-1 rounded text-xs text-white/50 hover:text-white/80 hover:bg-white/5 transition-all"
             >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              Widgets
+            </Link>
+            <Link
+              href="/changelog"
+              className="px-2 py-1 rounded text-xs text-white/50 hover:text-white/80 hover:bg-white/5 transition-all"
+            >
+              Log
+            </Link>
+            <Link
+              href="/locations"
+              className="px-2 py-1 rounded text-xs text-white/50 hover:text-white/80 hover:bg-white/5 transition-all"
+            >
+              +
+            </Link>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+      </nav>
+
+      {/* Content */}
+      <div className="max-w-4xl mx-auto px-4 py-6">
+        {loading && !currentWeather && (
+          <div className="flex items-center justify-center py-20">
+            <div className="animate-pulse text-white/40 text-sm">Loading weather data...</div>
+          </div>
+        )}
+
+        {currentWeather && (
+          <WeatherPage weather={currentWeather} unit={unit} />
+        )}
+
+        {!loading && !currentWeather && (
+          <div className="flex flex-col items-center justify-center py-20 text-white/40">
+            <div className="text-4xl mb-4">☁️</div>
+            <div className="text-lg">Nimbus Weather</div>
+            <div className="text-sm mt-2">Select a location to view weather</div>
+          </div>
+        )}
+      </div>
+    </main>
   );
 }
