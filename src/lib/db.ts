@@ -85,14 +85,14 @@ CREATE INDEX IF NOT EXISTS idx_screenshots_location ON screenshots(location_id, 
 
 export async function setupDatabase() {
   const sql = getDb();
-  // Neon requires tagged templates — split schema into individual statements
+  // Use sql.query() for dynamic SQL strings (tagged templates only work for static)
   const statements = SCHEMA_SQL
     .split(';')
     .map(s => s.trim())
     .filter(s => s.length > 0);
 
   for (const stmt of statements) {
-    await sql(stmt as unknown as TemplateStringsArray);
+    await sql.query(stmt);
   }
   return { success: true };
 }
