@@ -202,6 +202,36 @@ function getWeights(hoursAhead: number): Record<ModelKey, number> {
   return { hrrr: 0, nbm: 0, gfs: 1.0 };
 }
 
+/** Fetch minutely (15-min) precipitation data from HRRR specifically.
+ *  HRRR has the best short-range precipitation timing due to radar assimilation.
+ *  Falls back to the default minutely_15 endpoint if HRRR-specific fails. */
+async function fetchMinutely15(lat: number, lon: number): Promise<MinutelyForecast[] | null> {
+  // Use the HRRR model specifically for minutely data (best radar-driven timing)
+  const url = `${BASE_URL}?latitude=${lat}&longitude=${lon}` +
+    `&models=ncep_hrrr_conus` +
+    `&minutely_15=precipitation,precipitation_probability,snowfall` +
+    `&precipitation_unit=inch` +
+    `&forecast_hours=3` +
+    `&timezone=auto`;
+
+  try {
+    const res = await fetch(url, { next: { revalidate: 900 } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const m = data.minutely_15;
+    if (!m?.time?.length) return null;
+
+    return m.time.map((t: string, i: number) => ({
+      time: new Date(t).toISOString(),
+      precipIntensity: (m.precipitation?.[i] || 0) * 4, // 15-min to hourly rate
+      precipProbability: m.precipitation_probability ? m.precipitation_probability[i] / 100 : 0,
+      precipType: (m.snowfall && m.snowfall[i] > 0) ? 'snow' as const : (m.precipitation?.[i] || 0) > 0 ? 'rain' as const : 'none' as const,
+    }));
+  } catch {
+    return null;
+  }
+}
+
 async function fetchModel(modelKey: ModelKey, lat: number, lon: number): Promise<OpenMeteoResponse | null> {
   const model = MODELS[modelKey];
   const url = `${BASE_URL}?latitude=${lat}&longitude=${lon}` +
@@ -341,11 +371,12 @@ function blendPrecipType(
 export async function fetchBlendedWeather(location: LocationInfo): Promise<WeatherData> {
   const { latitude, longitude } = location;
 
-  // Fetch all three models in parallel
-  const [hrrr, nbm, gfs] = await Promise.all([
+  // Fetch all three models + HRRR minutely in parallel
+  const [hrrr, nbm, gfs, hrrrMinutely] = await Promise.all([
     fetchModel('hrrr', latitude, longitude),
     fetchModel('nbm', latitude, longitude),
     fetchModel('gfs', latitude, longitude),
+    fetchMinutely15(latitude, longitude),
   ]);
 
   // If blending fails, fall back to standard fetch
@@ -455,7 +486,7 @@ export async function fetchBlendedWeather(location: LocationInfo): Promise<Weath
     daily: blendedDaily,
     stormEvents: [],
     weatherAlerts: [],
-    minutely: (hrrrData ?? nbmData ?? gfsData)?.minutely ?? null,
+    minutely: hrrrMinutely ?? (hrrrData ?? nbmData ?? gfsData)?.minutely ?? null,
     past24hPrecipitation: null,
     past24hPrecipType: null,
     tideData: null,

@@ -2,24 +2,25 @@
 
 // =============================================================================
 // Hourly Forecast Card — Scrollable 48-hour chart
-// Matches iOS HourlyForecastCard: temp curve + precip overlay in bottom 28%
+// Matches iOS HourlyForecastCard: temp curve + precip overlay + night shading + storm markers
 // =============================================================================
 
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import {
   ComposedChart, Area, Line, XAxis, YAxis, ResponsiveContainer,
-  ReferenceLine,
+  ReferenceLine, ReferenceArea,
 } from 'recharts';
-import { HourlyForecast, gaussianSmooth } from '@/lib/weather/types';
+import { HourlyForecast, StormEvent, gaussianSmooth } from '@/lib/weather/types';
 import { tempToColor } from '@/components/ui/TemperatureColor';
 import WeatherIcon from '@/components/ui/WeatherIcon';
 
 interface Props {
   hourly: HourlyForecast[];
+  storms?: StormEvent[];
   unit?: 'F' | 'C';
 }
 
-export default function HourlyForecastCard({ hourly, unit = 'F' }: Props) {
+export default function HourlyForecastCard({ hourly, storms, unit = 'F' }: Props) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const hours = hourly.slice(0, 48);
 
@@ -74,6 +75,40 @@ export default function HourlyForecastCard({ hourly, unit = 'F' }: Props) {
     smoothPrecip: precipToY(smoothedPrecip[i]),
   }));
 
+  // Find night blocks (contiguous runs of !isDaylight)
+  const nightBlocks: { startIdx: number; endIdx: number }[] = [];
+  let nightStart: number | null = null;
+  for (let i = 0; i < chartData.length; i++) {
+    if (!chartData[i].isDaylight) {
+      if (nightStart === null) nightStart = i;
+    } else {
+      if (nightStart !== null) {
+        nightBlocks.push({ startIdx: nightStart, endIdx: i - 1 });
+        nightStart = null;
+      }
+    }
+  }
+  if (nightStart !== null) nightBlocks.push({ startIdx: nightStart, endIdx: chartData.length - 1 });
+
+  // Map storm events to chart indices
+  const stormRanges: { startIdx: number; endIdx: number; label: string }[] = [];
+  if (storms) {
+    for (const storm of storms) {
+      const stormStart = new Date(storm.startTime).getTime();
+      const stormEnd = new Date(storm.endTime).getTime();
+      let si = -1, ei = -1;
+      for (let i = 0; i < hours.length; i++) {
+        const t = new Date(hours[i].time).getTime();
+        if (si < 0 && t >= stormStart) si = i;
+        if (t <= stormEnd) ei = i;
+      }
+      if (si >= 0 && ei >= 0) {
+        const typeIcon = storm.dominantPrecipType === 'snow' ? '❄️' : storm.dominantPrecipType === 'sleet' ? '🌨️' : '🌧️';
+        stormRanges.push({ startIdx: si, endIdx: ei, label: `${typeIcon} ${storm.totalAccumulation.toFixed(2)}"` });
+      }
+    }
+  }
+
   const selected = selectedIdx != null ? chartData[selectedIdx] : null;
 
   return (
@@ -111,8 +146,36 @@ export default function HourlyForecastCard({ hourly, unit = 'F' }: Props) {
               />
               <YAxis hide domain={[yMin, yMax]} />
 
-              {/* Night shading — via data points where isDaylight is false */}
-              {/* (Simplified for web — could add rectangular overlays) */}
+              {/* Night shading — subtle dark overlay for nighttime hours */}
+              {nightBlocks.map((block, bi) => (
+                <ReferenceArea
+                  key={`night-${bi}`}
+                  x1={chartData[block.startIdx]?.label}
+                  x2={chartData[block.endIdx]?.label}
+                  y1={yMin}
+                  y2={yMax}
+                  fill="#000"
+                  fillOpacity={0.15}
+                  strokeOpacity={0}
+                />
+              ))}
+
+              {/* Storm event annotations — highlighted regions */}
+              {stormRanges.map((storm, si) => (
+                <ReferenceArea
+                  key={`storm-${si}`}
+                  x1={chartData[storm.startIdx]?.label}
+                  x2={chartData[storm.endIdx]?.label}
+                  y1={yMin}
+                  y2={yMax}
+                  fill="#EF4444"
+                  fillOpacity={0.08}
+                  stroke="#EF4444"
+                  strokeOpacity={0.2}
+                  strokeDasharray="3 3"
+                  label={{ value: storm.label, position: 'insideTop', fill: 'rgba(255,255,255,0.5)', fontSize: 9 }}
+                />
+              ))}
 
               {/* Precip area overlay */}
               <Area
