@@ -354,12 +354,14 @@ export async function fetchHistoricalWeather(
   high: number;
   low: number;
   precipTotal: number;
+  precipType: PrecipitationType;
   condition: WeatherCondition;
+  windSpeedMax: number | null;
 } | null> {
   const url = `${HISTORICAL_URL}?latitude=${lat}&longitude=${lon}` +
     `&start_date=${date}&end_date=${date}` +
-    `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code` +
-    `&temperature_unit=fahrenheit&precipitation_unit=inch` +
+    `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,snowfall_sum,weather_code,wind_speed_10m_max` +
+    `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch` +
     `&timezone=auto`;
 
   try {
@@ -369,11 +371,25 @@ export async function fetchHistoricalWeather(
     const d = data.daily;
     if (!d || !d.time.length) return null;
 
+    const precipTotal = d.precipitation_sum[0] || 0;
+    const snowfall = d.snowfall_sum?.[0] || 0; // snowfall in cm from API
+    const snowInches = cmToInches(snowfall);
+
+    // Determine actual precip type from snowfall vs total precipitation
+    let precipType: PrecipitationType = 'none';
+    if (precipTotal > 0.01) {
+      if (snowInches > precipTotal * 0.5) precipType = 'snow';
+      else if (snowInches > 0.01) precipType = 'sleet';
+      else precipType = 'rain';
+    }
+
     return {
       high: d.temperature_2m_max[0],
       low: d.temperature_2m_min[0],
-      precipTotal: d.precipitation_sum[0],
+      precipTotal,
+      precipType,
       condition: wmoToCondition(d.weather_code[0], true),
+      windSpeedMax: d.wind_speed_10m_max?.[0] ?? null,
     };
   } catch {
     return null;

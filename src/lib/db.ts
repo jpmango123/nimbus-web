@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS actual_weather (
     actual_precip   DOUBLE PRECISION,
     actual_precip_type TEXT,
     actual_condition TEXT,
+    actual_wind_speed DOUBLE PRECISION,
     source          TEXT DEFAULT 'open-meteo-historical',
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(location_id, date)
@@ -75,6 +76,10 @@ CREATE TABLE IF NOT EXISTS screenshots (
     image_url   TEXT,
     metadata    JSONB
 );
+
+-- Migrations (safe to re-run)
+ALTER TABLE actual_weather ADD COLUMN IF NOT EXISTS actual_precip_type TEXT;
+ALTER TABLE actual_weather ADD COLUMN IF NOT EXISTS actual_wind_speed DOUBLE PRECISION;
 
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_snapshots_location_date ON forecast_snapshots(location_id, target_date);

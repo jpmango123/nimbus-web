@@ -82,25 +82,37 @@ export async function GET() {
         const modelInfo = modelBreakdown ? ' (+ per-model data)' : '';
         results.push(`✓ ${location.name}: ${weather.daily.length} days captured${modelInfo}`);
 
-        // 4. Fetch yesterday's actual weather
-        const yesterday = new Date(now.getTime() - 86400000);
-        const yesterdayStr = yesterday.toISOString().slice(0, 10);
+        // 4. Fetch actual weather for last 3 days (backfill to catch gaps)
+        for (let dayBack = 1; dayBack <= 3; dayBack++) {
+          const pastDate = new Date(now.getTime() - dayBack * 86400000);
+          const pastDateStr = pastDate.toISOString().slice(0, 10);
 
-        const actual = await fetchHistoricalWeather(
-          location.latitude, location.longitude, yesterdayStr
-        );
-
-        if (actual) {
-          await sql`
-            INSERT INTO actual_weather
-              (location_id, date, actual_high, actual_low, actual_precip,
-               actual_condition, source)
-            VALUES
-              (${loc.id}, ${yesterdayStr}, ${actual.high}, ${actual.low},
-               ${actual.precipTotal}, ${actual.condition}, 'open-meteo-historical')
-            ON CONFLICT (location_id, date) DO NOTHING
+          // Skip if we already have this date
+          const existing = await sql`
+            SELECT 1 FROM actual_weather
+            WHERE location_id = ${loc.id} AND date = ${pastDateStr}
           `;
-          results.push(`  ↳ Actual for ${yesterdayStr}: H${Math.round(actual.high)}° L${Math.round(actual.low)}° precip ${actual.precipTotal.toFixed(2)}"`);
+          if (existing.length > 0) continue;
+
+          const actual = await fetchHistoricalWeather(
+            location.latitude, location.longitude, pastDateStr
+          );
+
+          if (actual) {
+            await sql`
+              INSERT INTO actual_weather
+                (location_id, date, actual_high, actual_low, actual_precip,
+                 actual_precip_type, actual_condition, actual_wind_speed, source)
+              VALUES
+                (${loc.id}, ${pastDateStr}, ${actual.high}, ${actual.low},
+                 ${actual.precipTotal}, ${actual.precipType}, ${actual.condition},
+                 ${actual.windSpeedMax}, 'open-meteo-historical')
+              ON CONFLICT (location_id, date) DO NOTHING
+            `;
+            if (dayBack === 1) {
+              results.push(`  ↳ Actual for ${pastDateStr}: H${Math.round(actual.high)}° L${Math.round(actual.low)}° precip ${actual.precipTotal.toFixed(2)}" (${actual.precipType})`);
+            }
+          }
         }
 
       } catch (err) {

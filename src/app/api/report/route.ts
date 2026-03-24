@@ -44,36 +44,50 @@ export async function GET() {
     const weekAgo = new Date(now.getTime() - 7 * 86400000).toISOString().slice(0, 10);
 
     // 1. Calculate accuracy metrics per location (last 7 days)
+    // Use a subquery to pick the single best snapshot per location/date
+    // (closest to 24h ahead) to avoid double-counting from multiple 3h audits
     const accuracy = await sql`
+      WITH best_snapshot AS (
+        SELECT DISTINCT ON (location_id, target_date)
+          location_id, target_date, predicted_high, predicted_low,
+          predicted_precip_accum, predicted_precip_type, hours_ahead
+        FROM forecast_snapshots
+        WHERE hours_ahead BETWEEN 12 AND 36
+        ORDER BY location_id, target_date, ABS(hours_ahead - 24) ASC
+      )
       SELECT
         l.name as location_name,
         l.id as location_id,
-        AVG(ABS(fs.predicted_high - aw.actual_high)) as avg_temp_error_high,
-        AVG(ABS(fs.predicted_low - aw.actual_low)) as avg_temp_error_low,
-        AVG(ABS(fs.predicted_precip_accum - aw.actual_precip)) as avg_precip_error,
+        AVG(ABS(bs.predicted_high - aw.actual_high)) as avg_temp_error_high,
+        AVG(ABS(bs.predicted_low - aw.actual_low)) as avg_temp_error_low,
+        AVG(ABS(bs.predicted_precip_accum - aw.actual_precip)) as avg_precip_error,
         COUNT(DISTINCT aw.date) as days_compared
       FROM locations l
       JOIN actual_weather aw ON aw.location_id = l.id AND aw.date >= ${weekAgo}
-      JOIN forecast_snapshots fs ON fs.location_id = l.id
-        AND fs.target_date = aw.date
-        AND fs.hours_ahead BETWEEN 12 AND 36
+      JOIN best_snapshot bs ON bs.location_id = l.id AND bs.target_date = aw.date
       GROUP BY l.id, l.name
       ORDER BY l.sort_order
     ` as AccuracyRow[];
 
-    // 2. Get detailed comparison data
+    // 2. Get detailed comparison data (one snapshot per location/date, closest to 24h out)
     const comparisons = await sql`
+      WITH best_snapshot AS (
+        SELECT DISTINCT ON (location_id, target_date)
+          location_id, target_date, predicted_high, predicted_low,
+          predicted_precip_prob, predicted_precip_accum, hours_ahead
+        FROM forecast_snapshots
+        WHERE hours_ahead BETWEEN 12 AND 36
+        ORDER BY location_id, target_date, ABS(hours_ahead - 24) ASC
+      )
       SELECT
         l.name as location_name,
         aw.date as target_date,
-        fs.predicted_high, fs.predicted_low,
-        fs.predicted_precip_prob, fs.predicted_precip_accum,
+        bs.predicted_high, bs.predicted_low,
+        bs.predicted_precip_prob, bs.predicted_precip_accum,
         aw.actual_high, aw.actual_low, aw.actual_precip
       FROM locations l
       JOIN actual_weather aw ON aw.location_id = l.id AND aw.date >= ${weekAgo}
-      JOIN forecast_snapshots fs ON fs.location_id = l.id
-        AND fs.target_date = aw.date
-        AND fs.hours_ahead BETWEEN 12 AND 36
+      JOIN best_snapshot bs ON bs.location_id = l.id AND bs.target_date = aw.date
       ORDER BY aw.date DESC, l.sort_order
       LIMIT 50
     ` as SnapshotRow[];
@@ -123,7 +137,7 @@ export async function GET() {
             .catch(e => { analyses.visual = `Unavailable: ${e}`; })
         );
       } else {
-        analyses.visual = 'No screenshots captured. Puppeteer/Chromium not available in this environment.';
+        analyses.visual = '⚠️ SCREENSHOTS UNAVAILABLE — Puppeteer/Chromium failed in this environment. Visual analysis, UX review, and chart-vs-data comparison are running without images. Consider adding a screenshot capture service or enabling Chromium on Vercel Pro.';
       }
 
       // C. Blending & data processing
@@ -154,6 +168,8 @@ export async function GET() {
             .then(r => { analyses.ux = r; })
             .catch(e => { analyses.ux = `Unavailable: ${e}`; })
         );
+      } else {
+        analyses.ux = '⚠️ Skipped — requires screenshots. Will run once Puppeteer/Chromium is available.';
       }
 
       // G. Data-vs-Display consistency (does the chart show what the API says?)
