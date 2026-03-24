@@ -35,19 +35,27 @@ export default function StormBanner({ storms }: Props) {
             </div>
             <div className="grid grid-cols-3 gap-2 text-xs text-white/60">
               <div>
+                <div className="text-white/40">When</div>
+                <div>{start.toLocaleDateString('en-US', { weekday: 'short' })} {start.toLocaleTimeString('en-US', { hour: 'numeric' })} – {end.toLocaleTimeString('en-US', { hour: 'numeric' })}</div>
+              </div>
+              <div>
                 <div className="text-white/40">Duration</div>
                 <div>{durationHrs}h</div>
               </div>
-              <div>
-                <div className="text-white/40">Total</div>
-                <div>{storm.totalAccumulation >= 1
-                  ? `${storm.totalAccumulation.toFixed(1)}"`
-                  : `${storm.totalAccumulation.toFixed(2)}"`}</div>
-              </div>
-              <div>
-                <div className="text-white/40">Peak</div>
-                <div>{storm.peakIntensity.toFixed(2)} in/hr</div>
-              </div>
+              {/* Show accumulation only for snow/sleet, not rain */}
+              {storm.dominantPrecipType !== 'rain' ? (
+                <div>
+                  <div className="text-white/40">Total</div>
+                  <div>{storm.totalAccumulation >= 1
+                    ? `${storm.totalAccumulation.toFixed(1)}"`
+                    : `${storm.totalAccumulation.toFixed(2)}"`}</div>
+                </div>
+              ) : (
+                <div>
+                  <div className="text-white/40">Intensity</div>
+                  <div>{storm.peakIntensity < 0.10 ? 'Light' : storm.peakIntensity < 0.30 ? 'Moderate' : 'Heavy'}</div>
+                </div>
+              )}
             </div>
           </div>
         );
