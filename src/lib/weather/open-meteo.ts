@@ -119,6 +119,21 @@ function mmToInches(mm: number): number { return mm * 0.0393701; }
 function cmToInches(cm: number): number { return cm * 0.393701; }
 function mToMiles(m: number): number { return m * 0.000621371; }
 
+/** Statistical mode — returns the most frequent value in an array */
+function mode(arr: number[]): number {
+  const counts: Record<number, number> = {};
+  let maxCount = 0;
+  let result = arr[0];
+  for (const v of arr) {
+    counts[v] = (counts[v] || 0) + 1;
+    if (counts[v] > maxCount) {
+      maxCount = counts[v];
+      result = v;
+    }
+  }
+  return result;
+}
+
 // MARK: - API URLs
 
 const BASE_URL = 'https://api.open-meteo.com/v1/forecast';
@@ -642,6 +657,57 @@ function mapOpenMeteoResponse(resp: OpenMeteoResponse, location: LocationInfo): 
         code >= 66 && code <= 67 ? 'sleet' as const :
         precipInches > 0 ? 'rain' as const : 'none' as const;
 
+      // Derive conditionDay/Night from hourly data if available.
+      // The daily WMO code represents the whole 24h period, which means
+      // evening clouds can make a sunny day show as "cloudy".
+      // Instead, use the most common daytime condition (7am-7pm) and nighttime (7pm-7am).
+      let condDay: WeatherCondition = wmoToCondition(code, true);
+      let condNight: WeatherCondition = wmoToCondition(code, false);
+
+      if (resp.hourly) {
+        const dayStart = i * 24 + 7;  // 7am
+        const dayEnd = i * 24 + 19;   // 7pm
+        const nightStart = i * 24 + 19;
+        const nightEnd = i * 24 + 24 + 7; // 7am next day
+
+        const h = resp.hourly;
+        // Get most significant daytime condition (precipitation > clouds > clear)
+        const daytimeHours = [];
+        for (let hi = dayStart; hi < dayEnd && hi < h.time.length; hi++) {
+          daytimeHours.push({ code: h.weather_code[hi], isDay: h.is_day[hi] === 1 });
+        }
+        const nighttimeHours = [];
+        for (let hi = nightStart; hi < nightEnd && hi < h.time.length; hi++) {
+          nighttimeHours.push({ code: h.weather_code[hi], isDay: h.is_day[hi] === 1 });
+        }
+
+        if (daytimeHours.length > 0) {
+          // Find the "most representative" condition by picking the most common,
+          // but prioritize precipitation codes over non-precipitation ones
+          const precipHours = daytimeHours.filter(dh => dh.code >= 51);
+          if (precipHours.length >= daytimeHours.length * 0.3) {
+            // 30%+ of daytime has precipitation — use precip condition
+            const mostCommonPrecipCode = mode(precipHours.map(dh => dh.code));
+            condDay = wmoToCondition(mostCommonPrecipCode, true);
+          } else {
+            // Use most common daytime condition
+            const mostCommonCode = mode(daytimeHours.map(dh => dh.code));
+            condDay = wmoToCondition(mostCommonCode, true);
+          }
+        }
+
+        if (nighttimeHours.length > 0) {
+          const precipHoursN = nighttimeHours.filter(nh => nh.code >= 51);
+          if (precipHoursN.length >= nighttimeHours.length * 0.3) {
+            const mostCommonPrecipCode = mode(precipHoursN.map(nh => nh.code));
+            condNight = wmoToCondition(mostCommonPrecipCode, false);
+          } else {
+            const mostCommonCode = mode(nighttimeHours.map(nh => nh.code));
+            condNight = wmoToCondition(mostCommonCode, false);
+          }
+        }
+      }
+
       daily.push({
         time: new Date(d.time[i]).toISOString(),
         temperatureHigh: high,
@@ -653,9 +719,9 @@ function mapOpenMeteoResponse(resp: OpenMeteoResponse, location: LocationInfo): 
         humidity: 0.5, // daily avg not available, placeholder
         windSpeed: d.wind_speed_10m_max[i],
         windGust: d.wind_gusts_10m_max[i] || null,
-        conditionDay: wmoToCondition(code, true),
-        conditionNight: wmoToCondition(code, false),
-        summary: wmoToCondition(code, true),
+        conditionDay: condDay,
+        conditionNight: condNight,
+        summary: condDay,
         precipProbability: (d.precipitation_probability_max[i] || 0) / 100,
         precipAccumulation: precipInches,
         precipType: pType,
