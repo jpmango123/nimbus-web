@@ -180,7 +180,7 @@ type ModelKey = keyof typeof MODELS;
 
 /** Blended weight table matching iOS BlendedWeatherProvider */
 function getWeights(hoursAhead: number): Record<ModelKey, number> {
-  if (hoursAhead <= 6)  return { hrrr: 0.60, nbm: 0.30, gfs: 0.10 };
+  if (hoursAhead <= 6)  return { hrrr: 0.70, nbm: 0.25, gfs: 0.05 };
   if (hoursAhead <= 18) return { hrrr: 0.40, nbm: 0.40, gfs: 0.20 };
   if (hoursAhead <= 48) return { hrrr: 0.15, nbm: 0.55, gfs: 0.30 };
   if (hoursAhead <= 192) return { hrrr: 0, nbm: 0.40, gfs: 0.60 };
