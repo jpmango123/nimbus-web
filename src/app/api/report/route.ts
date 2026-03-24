@@ -110,6 +110,11 @@ export async function GET() {
       meteorological: '',
       calibration: '',
       hourlyAccuracy: '',
+      forecastStability: '',
+      precipTiming: '',
+      windAccuracy: '',
+      conditionAccuracy: '',
+      modelRanking: '',
       ux: '',
       dataVsDisplay: '',
     };
@@ -169,7 +174,42 @@ export async function GET() {
           .catch(e => { analyses.hourlyAccuracy = `Unavailable: ${e}`; })
       );
 
-      // G. UX/Display intelligence
+      // G. Forecast stability / flip-flop detection
+      tasks.push(
+        analyzeForecastStability(claudeKey, sql, weekAgo)
+          .then(r => { analyses.forecastStability = r; })
+          .catch(e => { analyses.forecastStability = `Unavailable: ${e}`; })
+      );
+
+      // H. Precipitation timing accuracy
+      tasks.push(
+        analyzePrecipTiming(claudeKey, sql, weekAgo)
+          .then(r => { analyses.precipTiming = r; })
+          .catch(e => { analyses.precipTiming = `Unavailable: ${e}`; })
+      );
+
+      // I. Wind forecast accuracy
+      tasks.push(
+        analyzeWindAccuracy(claudeKey, sql, weekAgo)
+          .then(r => { analyses.windAccuracy = r; })
+          .catch(e => { analyses.windAccuracy = `Unavailable: ${e}`; })
+      );
+
+      // J. Condition / icon accuracy
+      tasks.push(
+        analyzeConditionAccuracy(claudeKey, sql, weekAgo)
+          .then(r => { analyses.conditionAccuracy = r; })
+          .catch(e => { analyses.conditionAccuracy = `Unavailable: ${e}`; })
+      );
+
+      // K. Dynamic model ranking
+      tasks.push(
+        analyzeModelRanking(claudeKey, sql, weekAgo)
+          .then(r => { analyses.modelRanking = r; })
+          .catch(e => { analyses.modelRanking = `Unavailable: ${e}`; })
+      );
+
+      // L. UX/Display intelligence
       if (screenshots.length > 0) {
         tasks.push(
           analyzeUX(claudeKey, screenshots)
@@ -217,6 +257,11 @@ export async function GET() {
       { category: 'accuracy', summary: 'Meteorological intelligence: storms, precip type, diurnal bias', key: 'meteorological' },
       { category: 'accuracy', summary: 'Confidence calibration & model skill scoring', key: 'calibration' },
       { category: 'accuracy', summary: 'Hourly forecast accuracy + Brier skill score', key: 'hourlyAccuracy' },
+      { category: 'accuracy', summary: 'Forecast stability: flip-flop detection', key: 'forecastStability' },
+      { category: 'accuracy', summary: 'Precipitation timing accuracy (hourly)', key: 'precipTiming' },
+      { category: 'accuracy', summary: 'Wind forecast accuracy', key: 'windAccuracy' },
+      { category: 'accuracy', summary: 'Condition/icon accuracy', key: 'conditionAccuracy' },
+      { category: 'accuracy', summary: 'Dynamic model ranking (HRRR vs NBM vs GFS)', key: 'modelRanking' },
       { category: 'visual', summary: 'UX/Display: hierarchy, accessibility, layout', key: 'ux' },
       { category: 'bug_fix', summary: 'Data vs Display: API data vs chart rendering consistency', key: 'dataVsDisplay' },
     ];
@@ -861,6 +906,436 @@ Evaluate as a meteorologist:
    - Should the consensus-weighted precip blending be tuned (currently using 30% floor)?
 
 Be specific with numbers and file/variable references.`;
+
+  return await callClaudeText(apiKey, prompt);
+}
+
+// MARK: - Forecast Stability / Flip-Flop Detection
+
+async function analyzeForecastStability(apiKey: string, sql: NeonSql, weekAgo: string): Promise<string> {
+  // Compare consecutive audit snapshots for the same target date to measure forecast volatility
+  const snapshots = await sql`
+    SELECT
+      l.name as location_name,
+      fs.target_date,
+      fs.captured_at,
+      fs.predicted_high,
+      fs.predicted_low,
+      fs.predicted_precip_prob,
+      fs.predicted_precip_accum
+    FROM forecast_snapshots fs
+    JOIN locations l ON l.id = fs.location_id
+    WHERE fs.captured_at > ${weekAgo}
+      AND fs.hours_ahead BETWEEN 12 AND 48
+    ORDER BY l.name, fs.target_date, fs.captured_at
+    LIMIT 300
+  `;
+
+  if (snapshots.length < 10) {
+    return 'Not enough consecutive snapshots yet. Need multiple audit cycles for the same target dates.';
+  }
+
+  // Group by location + target_date, measure volatility across captures
+  const groups: Record<string, { highs: number[]; lows: number[]; precipProbs: number[]; precipAccums: number[] }> = {};
+  for (const s of snapshots) {
+    const key = `${s.location_name}|${s.target_date}`;
+    if (!groups[key]) groups[key] = { highs: [], lows: [], precipProbs: [], precipAccums: [] };
+    groups[key].highs.push(s.predicted_high as number);
+    groups[key].lows.push(s.predicted_low as number);
+    groups[key].precipProbs.push(s.predicted_precip_prob as number);
+    groups[key].precipAccums.push(s.predicted_precip_accum as number);
+  }
+
+  const volatility: string[] = [];
+  let highFlipFlops = 0;
+  let totalGroups = 0;
+
+  for (const [key, g] of Object.entries(groups)) {
+    if (g.highs.length < 2) continue;
+    totalGroups++;
+    const highRange = Math.max(...g.highs) - Math.min(...g.highs);
+    const precipProbRange = Math.max(...g.precipProbs) - Math.min(...g.precipProbs);
+
+    // Flag flip-flops: high temp swings >5°F or precip prob swings >30%
+    if (highRange > 5 || precipProbRange > 0.3) {
+      highFlipFlops++;
+      volatility.push(
+        `  ${key}: high swung ${highRange.toFixed(1)}°F (${Math.min(...g.highs).toFixed(0)}-${Math.max(...g.highs).toFixed(0)}), ` +
+        `precip prob swung ${(precipProbRange * 100).toFixed(0)}% across ${g.highs.length} audits`
+      );
+    }
+  }
+
+  const flipFlopRate = totalGroups > 0 ? (highFlipFlops / totalGroups * 100).toFixed(0) : '0';
+
+  const prompt = `You are a meteorologist evaluating forecast STABILITY for the Nimbus weather app.
+
+## Forecast Volatility Summary
+- Total location-date pairs analyzed: ${totalGroups}
+- Pairs with significant flip-flops: ${highFlipFlops} (${flipFlopRate}%)
+- Criteria: high temp swing >5°F OR precip probability swing >30% between audit cycles
+
+## Specific Flip-Flop Cases
+${volatility.slice(0, 15).join('\n') || '  No significant flip-flops detected.'}
+
+## Analysis Required
+1. **Is ${flipFlopRate}% flip-flop rate acceptable?** NWS operational forecasts typically show <10% volatility for 24h predictions. How does this compare?
+2. **Temperature vs Precipitation stability** — Which is more volatile? Precip volatility is more damaging to user trust.
+3. **Root cause** — Are flip-flops caused by model switching (HRRR drops out at 48h), blending instability, or genuine meteorological uncertainty?
+4. **Recommendations** — Should we add temporal smoothing (weight recent audits more)? Should we use a rolling average across audit cycles for stability? Suggest specific damping strategies with parameters.
+5. **User impact** — If a user checks at 8am and sees 60% rain, then checks at 2pm and sees 15% rain, that's a trust-destroying experience. Recommend a maximum acceptable change rate per audit cycle.`;
+
+  return await callClaudeText(apiKey, prompt);
+}
+
+// MARK: - Precipitation Timing Accuracy
+
+async function analyzePrecipTiming(apiKey: string, sql: NeonSql, weekAgo: string): Promise<string> {
+  // Compare hourly precipitation predictions vs actuals to check timing
+  const hourlyComps = await sql`
+    SELECT
+      l.name as location_name,
+      hfs.target_hour,
+      hfs.hours_ahead,
+      hfs.predicted_precip_prob,
+      hfs.predicted_precip_accum,
+      ha.actual_precip,
+      ha.actual_snowfall
+    FROM hourly_forecast_snapshots hfs
+    JOIN hourly_actuals ha ON ha.location_id = hfs.location_id AND ha.hour = hfs.target_hour
+    JOIN locations l ON l.id = hfs.location_id
+    WHERE hfs.captured_at > ${weekAgo}
+      AND hfs.hours_ahead BETWEEN 3 AND 36
+    ORDER BY l.name, hfs.target_hour
+    LIMIT 300
+  `;
+
+  if (hourlyComps.length < 20) {
+    return 'Not enough hourly data yet for timing analysis. Need at least 2 days of hourly snapshots + actuals.';
+  }
+
+  // Group by location and date, find predicted vs actual rain windows
+  const byLocDate: Record<string, { hours: Array<{ hour: string; predProb: number; predAccum: number; actualPrecip: number }> }> = {};
+  for (const row of hourlyComps) {
+    const date = new Date(row.target_hour as string).toISOString().slice(0, 10);
+    const key = `${row.location_name}|${date}`;
+    if (!byLocDate[key]) byLocDate[key] = { hours: [] };
+    byLocDate[key].hours.push({
+      hour: new Date(row.target_hour as string).toLocaleTimeString('en-US', { hour: 'numeric' }),
+      predProb: row.predicted_precip_prob as number,
+      predAccum: row.predicted_precip_accum as number,
+      actualPrecip: row.actual_precip as number,
+    });
+  }
+
+  // Find timing mismatches
+  const timingIssues: string[] = [];
+  for (const [key, data] of Object.entries(byLocDate)) {
+    const predictedRainHours = data.hours.filter(h => h.predProb > 0.3).map(h => h.hour);
+    const actualRainHours = data.hours.filter(h => h.actualPrecip > 0.005).map(h => h.hour);
+
+    if (predictedRainHours.length === 0 && actualRainHours.length === 0) continue;
+    if (predictedRainHours.length === 0 && actualRainHours.length > 0) {
+      timingIssues.push(`  ${key}: MISSED — no rain predicted but rained at ${actualRainHours.join(', ')}`);
+    } else if (predictedRainHours.length > 0 && actualRainHours.length === 0) {
+      timingIssues.push(`  ${key}: FALSE ALARM — predicted rain at ${predictedRainHours.join(', ')} but none fell`);
+    } else if (predictedRainHours.length > 0 && actualRainHours.length > 0) {
+      // Check if timing overlaps
+      const overlap = predictedRainHours.filter(h => actualRainHours.includes(h));
+      if (overlap.length === 0) {
+        timingIssues.push(`  ${key}: TIMING ERROR — predicted rain at ${predictedRainHours.join(', ')} but actually rained at ${actualRainHours.join(', ')}`);
+      }
+    }
+  }
+
+  const prompt = `You are a meteorologist analyzing PRECIPITATION TIMING accuracy for the Nimbus weather app.
+
+## Timing Analysis
+- Total location-date pairs with precipitation data: ${Object.keys(byLocDate).length}
+- Timing issues found: ${timingIssues.length}
+
+## Specific Timing Problems
+${timingIssues.slice(0, 15).join('\n') || '  No significant timing issues found.'}
+
+## Analysis Required
+1. **Timing error patterns** — Are storms consistently arriving early or late? A systematic bias (e.g., always 3h early) can be corrected.
+2. **False alarms vs misses** — Count each type. For a weather app, a false alarm ("carry an umbrella" when it doesn't rain) is less harmful than a miss (user gets soaked).
+3. **Model attribution** — HRRR excels at convective timing (0-12h) while GFS often has 6-12h timing errors. Is the blending strategy preserving HRRR's timing advantage?
+4. **Recommendations** — Should we add a timing bias correction? For example, if precipitation consistently arrives 2h earlier than predicted, we could shift the hourly precipitation curve.
+5. **Impact on graphs** — If the hourly precipitation chart shows rain starting at 3pm but it actually starts at noon, the user sees a "wrong" graph. How should we address this?`;
+
+  return await callClaudeText(apiKey, prompt);
+}
+
+// MARK: - Wind Forecast Accuracy
+
+async function analyzeWindAccuracy(apiKey: string, sql: NeonSql, weekAgo: string): Promise<string> {
+  // Compare predicted wind vs actual wind speed
+  const windComps = await sql`
+    SELECT
+      l.name as location_name,
+      hfs.target_hour,
+      hfs.hours_ahead,
+      hfs.predicted_wind_speed,
+      ha.actual_wind_speed
+    FROM hourly_forecast_snapshots hfs
+    JOIN hourly_actuals ha ON ha.location_id = hfs.location_id AND ha.hour = hfs.target_hour
+    JOIN locations l ON l.id = hfs.location_id
+    WHERE hfs.captured_at > ${weekAgo}
+      AND hfs.hours_ahead BETWEEN 3 AND 36
+      AND hfs.predicted_wind_speed IS NOT NULL
+      AND ha.actual_wind_speed IS NOT NULL
+    ORDER BY l.name, hfs.target_hour
+    LIMIT 200
+  `;
+
+  if (windComps.length < 10) {
+    return 'Not enough wind data yet for accuracy analysis. Need at least 2 days of hourly data.';
+  }
+
+  // Calculate wind error stats
+  let totalError = 0;
+  let overPredictions = 0;
+  let underPredictions = 0;
+  const byLocation: Record<string, { errors: number[]; biases: number[] }> = {};
+
+  for (const row of windComps) {
+    const pred = row.predicted_wind_speed as number;
+    const actual = row.actual_wind_speed as number;
+    const error = Math.abs(pred - actual);
+    const bias = pred - actual; // positive = over-prediction
+    totalError += error;
+    if (bias > 2) overPredictions++;
+    if (bias < -2) underPredictions++;
+
+    const loc = row.location_name as string;
+    if (!byLocation[loc]) byLocation[loc] = { errors: [], biases: [] };
+    byLocation[loc].errors.push(error);
+    byLocation[loc].biases.push(bias);
+  }
+
+  const avgError = totalError / windComps.length;
+  const locationSummary = Object.entries(byLocation).map(([loc, d]) => {
+    const avgE = d.errors.reduce((s, v) => s + v, 0) / d.errors.length;
+    const avgB = d.biases.reduce((s, v) => s + v, 0) / d.biases.length;
+    return `  ${loc}: MAE=${avgE.toFixed(1)} mph, bias=${avgB > 0 ? '+' : ''}${avgB.toFixed(1)} mph (${d.errors.length} hours)`;
+  }).join('\n');
+
+  const prompt = `You are a meteorologist analyzing WIND FORECAST accuracy for the Nimbus weather app.
+
+## Wind Accuracy Summary
+- Total hourly comparisons: ${windComps.length}
+- Mean Absolute Error: ${avgError.toFixed(1)} mph
+- Over-predictions (>2 mph high): ${overPredictions} (${(overPredictions / windComps.length * 100).toFixed(0)}%)
+- Under-predictions (>2 mph low): ${underPredictions} (${(underPredictions / windComps.length * 100).toFixed(0)}%)
+
+## By Location
+${locationSummary}
+
+## Analysis Required
+1. **Is ${avgError.toFixed(1)} mph MAE acceptable?** Typical NWP wind MAE is 3-5 mph for surface winds. How does this compare?
+2. **Bias direction** — Is the app systematically over-predicting or under-predicting wind? An over-prediction bias makes the app feel "alarmist."
+3. **Location patterns** — Do coastal locations have worse wind accuracy (sea breeze effects)? Do inland locations have better accuracy?
+4. **Gust prediction** — We display windGust in the UI. Are gusts more or less accurate than sustained wind?
+5. **Recommendations** — Should we apply a wind bias correction? Should coastal locations use different model weights for wind (NBM often handles sea breeze better than GFS)?`;
+
+  return await callClaudeText(apiKey, prompt);
+}
+
+// MARK: - Condition / Icon Accuracy
+
+async function analyzeConditionAccuracy(apiKey: string, sql: NeonSql, weekAgo: string): Promise<string> {
+  // Compare predicted condition against actual weather code
+  const condComps = await sql`
+    SELECT
+      l.name as location_name,
+      hfs.target_hour,
+      hfs.predicted_condition,
+      hfs.predicted_precip_type,
+      ha.weather_code,
+      ha.actual_precip,
+      ha.actual_snowfall
+    FROM hourly_forecast_snapshots hfs
+    JOIN hourly_actuals ha ON ha.location_id = hfs.location_id AND ha.hour = hfs.target_hour
+    JOIN locations l ON l.id = hfs.location_id
+    WHERE hfs.captured_at > ${weekAgo}
+      AND hfs.hours_ahead BETWEEN 3 AND 36
+    ORDER BY l.name, hfs.target_hour
+    LIMIT 200
+  `;
+
+  if (condComps.length < 10) {
+    return 'Not enough data yet for condition accuracy analysis. Need at least 2 days of hourly data.';
+  }
+
+  // WMO code to broad category mapping
+  function wmoCategory(code: number): string {
+    if (code <= 1) return 'clear';
+    if (code === 2) return 'partly-cloudy';
+    if (code === 3) return 'cloudy';
+    if (code >= 45 && code <= 48) return 'fog';
+    if ((code >= 51 && code <= 65) || (code >= 80 && code <= 82)) return 'rain';
+    if (code >= 56 && code <= 67) return 'sleet';
+    if ((code >= 71 && code <= 77) || (code >= 85 && code <= 86)) return 'snow';
+    if (code >= 95) return 'thunderstorm';
+    return 'unknown';
+  }
+
+  function conditionCategory(cond: string): string {
+    if (cond.includes('clear')) return 'clear';
+    if (cond.includes('partly')) return 'partly-cloudy';
+    if (cond === 'cloudy') return 'cloudy';
+    if (cond === 'fog') return 'fog';
+    if (cond === 'rain') return 'rain';
+    if (cond === 'snow') return 'snow';
+    if (cond === 'sleet') return 'sleet';
+    if (cond === 'thunderstorm') return 'thunderstorm';
+    return 'unknown';
+  }
+
+  let correct = 0;
+  let precipCorrect = 0;
+  let precipTotal = 0;
+  const confusionPairs: Record<string, number> = {};
+
+  for (const row of condComps) {
+    const predicted = conditionCategory(row.predicted_condition as string);
+    const actual = wmoCategory(row.weather_code as number);
+
+    if (predicted === actual) {
+      correct++;
+    } else {
+      const pair = `${predicted}→${actual}`;
+      confusionPairs[pair] = (confusionPairs[pair] || 0) + 1;
+    }
+
+    // Specifically track precipitation icon accuracy
+    const actualHasPrecip = (row.actual_precip as number) > 0.005;
+    const predictedHasPrecip = ['rain', 'snow', 'sleet', 'thunderstorm'].includes(predicted);
+    if (actualHasPrecip || predictedHasPrecip) {
+      precipTotal++;
+      if (predictedHasPrecip === actualHasPrecip) precipCorrect++;
+    }
+  }
+
+  const overallAccuracy = (correct / condComps.length * 100).toFixed(0);
+  const precipIconAccuracy = precipTotal > 0 ? (precipCorrect / precipTotal * 100).toFixed(0) : 'N/A';
+
+  const topConfusions = Object.entries(confusionPairs)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([pair, count]) => `  ${pair}: ${count} times`)
+    .join('\n');
+
+  const prompt = `You are evaluating WEATHER ICON ACCURACY for the Nimbus weather app.
+
+## Condition Accuracy Summary
+- Total hourly comparisons: ${condComps.length}
+- Overall icon accuracy: ${overallAccuracy}%
+- Precipitation icon accuracy: ${precipIconAccuracy}% (when either predicted or actual had precip)
+
+## Most Common Misclassifications
+${topConfusions || '  None found.'}
+
+## Analysis Required
+1. **Is ${overallAccuracy}% icon accuracy acceptable?** Consider that users glance at icons more than numbers. A wrong icon (showing sun when it's raining) destroys trust instantly.
+2. **Precipitation icon errors** — At ${precipIconAccuracy}%, is the app correctly showing rain/snow icons when precipitation occurs? This is the most impactful icon accuracy metric.
+3. **Common confusion pairs** — What do the misclassifications tell us? "partly-cloudy→rain" means we're missing rain onset. "rain→cloudy" means we're predicting rain that doesn't happen.
+4. **WMO code mapping** — Are there WMO weather codes we're mapping incorrectly? Should the thresholds in wmoToCondition() be adjusted?
+5. **Recommendations** — Suggest specific icon mapping or threshold changes to improve accuracy.`;
+
+  return await callClaudeText(apiKey, prompt);
+}
+
+// MARK: - Dynamic Model Ranking
+
+async function analyzeModelRanking(apiKey: string, sql: NeonSql, weekAgo: string): Promise<string> {
+  // Compare per-model forecasts against actuals to rank HRRR/NBM/GFS
+  const modelData = await sql`
+    SELECT
+      l.name as location_name,
+      fs.target_date,
+      fs.raw_json,
+      aw.actual_high,
+      aw.actual_low,
+      aw.actual_precip,
+      aw.actual_precip_type,
+      fs.predicted_high as blended_high,
+      fs.predicted_low as blended_low,
+      fs.predicted_precip_accum as blended_precip
+    FROM forecast_snapshots fs
+    JOIN actual_weather aw ON aw.location_id = fs.location_id AND aw.date = fs.target_date
+    JOIN locations l ON l.id = fs.location_id
+    WHERE fs.captured_at > ${weekAgo}
+      AND fs.hours_ahead BETWEEN 12 AND 36
+      AND fs.raw_json::text LIKE '%perModel%'
+    ORDER BY fs.target_date DESC
+    LIMIT 50
+  `;
+
+  if (modelData.length < 5) {
+    return 'Not enough per-model comparison data yet. Need several days of audits with per-model breakdowns.';
+  }
+
+  // Calculate error per model
+  const modelErrors: Record<string, { tempErrors: number[]; precipErrors: number[]; count: number }> = {
+    HRRR: { tempErrors: [], precipErrors: [], count: 0 },
+    NBM: { tempErrors: [], precipErrors: [], count: 0 },
+    GFS: { tempErrors: [], precipErrors: [], count: 0 },
+    Blended: { tempErrors: [], precipErrors: [], count: 0 },
+  };
+
+  for (const row of modelData) {
+    const raw = row.raw_json as Record<string, unknown>;
+    const perModel = raw?.perModel as Record<string, { high: number; low: number; precipAccum: number }> | undefined;
+    if (!perModel) continue;
+
+    const actualHigh = row.actual_high as number;
+    const actualLow = row.actual_low as number;
+    const actualPrecip = row.actual_precip as number;
+
+    // Blended
+    modelErrors.Blended.tempErrors.push(Math.abs((row.blended_high as number) - actualHigh));
+    modelErrors.Blended.precipErrors.push(Math.abs((row.blended_precip as number) - actualPrecip));
+    modelErrors.Blended.count++;
+
+    for (const [modelName, data] of Object.entries(perModel)) {
+      if (!data || data.high === 0) continue; // Skip invalid data
+      const key = modelName.toUpperCase();
+      if (!modelErrors[key]) continue;
+      modelErrors[key].tempErrors.push(Math.abs(data.high - actualHigh));
+      modelErrors[key].precipErrors.push(Math.abs((data.precipAccum || 0) - actualPrecip));
+      modelErrors[key].count++;
+    }
+  }
+
+  const rankingTable = Object.entries(modelErrors)
+    .filter(([, d]) => d.count > 0)
+    .map(([model, d]) => {
+      const avgTempErr = d.tempErrors.reduce((s, v) => s + v, 0) / d.tempErrors.length;
+      const avgPrecipErr = d.precipErrors.reduce((s, v) => s + v, 0) / d.precipErrors.length;
+      return `  ${model}: temp MAE=${avgTempErr.toFixed(1)}°F, precip MAE=${avgPrecipErr.toFixed(3)}" (${d.count} days)`;
+    })
+    .join('\n');
+
+  const prompt = `You are a meteorologist ranking NWP MODEL PERFORMANCE for the Nimbus weather app.
+
+## Per-Model Accuracy (Last 7 Days)
+${rankingTable}
+
+## Current Blending Weights
+- 0-6h: HRRR=70%, NBM=25%, GFS=5%
+- 6-18h: HRRR=40%, NBM=40%, GFS=20%
+- 18-48h: HRRR=15%, NBM=55%, GFS=30%
+- 48h+: NBM=40%, GFS=60%
+
+## Analysis Required
+1. **Model ranking** — Which model performed best this week for temperature? For precipitation? Is the blended result beating all individual models (it should)?
+2. **Weight justification** — Do the current weights match observed performance? If NBM is beating HRRR for temperature even at 0-6h, maybe HRRR is over-weighted.
+3. **Location-specific performance** — Do certain models perform better for certain locations? Coastal vs inland may favor different models.
+4. **Precipitation skill** — Which model had the lowest precipitation MAE? This is critical since precipitation blending is the hardest to get right.
+5. **Dynamic weight recommendations** — Based on this week's performance, suggest specific weight adjustments. Be conservative (±0.05 changes). The app uses consensus-weighted blending for precipitation, so weight changes primarily affect temperature blending.
+6. **Blended vs best individual** — If the blended forecast is worse than the best individual model, the blending strategy needs adjustment. Is it adding value?`;
 
   return await callClaudeText(apiKey, prompt);
 }
