@@ -30,10 +30,16 @@ export async function captureLocationScreenshots(
 
   let browser;
   try {
+    // Disable GPU/WebGL for serverless (reduces memory)
+    chromium.setGraphicsMode = false;
+
+    const executablePath = await chromium.executablePath();
+    console.log(`[SCREENSHOT] Chromium path: ${executablePath}`);
+
     browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: { width: 480, height: 900, deviceScaleFactor: 2 },
-      executablePath: await chromium.executablePath(),
+      executablePath,
       headless: true,
     });
 
@@ -84,6 +90,7 @@ export async function captureLocationScreenshots(
       height: 900,
     });
 
+    console.log(`[SCREENSHOT] Captured ${results.length} screenshots for ${locationName}`);
   } catch (err) {
     console.error(`[SCREENSHOT] Error capturing ${locationName}:`, err);
   } finally {
@@ -95,12 +102,14 @@ export async function captureLocationScreenshots(
 
 /**
  * Capture screenshots for all locations and widgets.
+ * Limit to first 3 locations to stay within function timeout.
  */
 export async function captureAllScreenshots(
   locations: { id: number; name: string }[]
 ): Promise<ScreenshotResult[]> {
   const all: ScreenshotResult[] = [];
-  for (let i = 0; i < locations.length; i++) {
+  // Limit to 3 locations to avoid timeout (each takes ~15-20s)
+  for (let i = 0; i < Math.min(locations.length, 3); i++) {
     const shots = await captureLocationScreenshots(i, locations[i].name);
     all.push(...shots);
   }
