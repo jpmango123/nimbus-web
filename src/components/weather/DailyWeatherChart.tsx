@@ -42,6 +42,7 @@ export default function DailyWeatherChart({ forecasts, hourlyForecasts, unit = '
       precipProb: day.precipProbability,
       precipType: day.precipType,
       conditionDay: day.conditionDay,
+      conditionNight: day.conditionNight,
       summary: day.summary,
       snowAccum: day.snowAccumulation,
       precipAccum: day.precipAccumulation,
@@ -80,11 +81,12 @@ export default function DailyWeatherChart({ forecasts, hourlyForecasts, unit = '
         <span>7-Day Forecast</span>
       </div>
 
-      {/* Weather icons row */}
+      {/* Weather icons row — day icon on top, night icon below */}
       <div className="flex justify-between px-6 mb-1">
         {chartData.map((d, i) => (
-          <div key={i} className="flex flex-col items-center">
-            <WeatherIcon condition={d.conditionDay} size={20} />
+          <div key={i} className="flex flex-col items-center gap-0.5">
+            <WeatherIcon condition={d.conditionDay} size={18} />
+            <WeatherIcon condition={d.conditionNight} size={12} />
           </div>
         ))}
       </div>

@@ -227,7 +227,11 @@ export async function GET() {
           .catch(e => { analyses.dataVsDisplay = `Unavailable: ${e}`; })
       );
 
-      await Promise.all(tasks);
+      // Run in batches of 4 to avoid Anthropic API rate limits (13 total calls)
+      const batchSize = 4;
+      for (let b = 0; b < tasks.length; b += batchSize) {
+        await Promise.all(tasks.slice(b, b + batchSize));
+      }
     } else {
       Object.keys(analyses).forEach(k => { analyses[k] = 'Claude API key not configured.'; });
     }
