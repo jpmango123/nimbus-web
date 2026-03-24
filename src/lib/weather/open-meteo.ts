@@ -197,7 +197,7 @@ type ModelKey = keyof typeof MODELS;
 function getWeights(hoursAhead: number): Record<ModelKey, number> {
   if (hoursAhead <= 6)  return { hrrr: 0.70, nbm: 0.25, gfs: 0.05 };
   if (hoursAhead <= 18) return { hrrr: 0.40, nbm: 0.40, gfs: 0.20 };
-  if (hoursAhead <= 48) return { hrrr: 0.15, nbm: 0.55, gfs: 0.30 };
+  if (hoursAhead <= 48) return { hrrr: hoursAhead <= 42 ? 0.15 : 0, nbm: hoursAhead <= 42 ? 0.55 : 0.65, gfs: hoursAhead <= 42 ? 0.30 : 0.35 };
   if (hoursAhead <= 192) return { hrrr: 0, nbm: 0.40, gfs: 0.60 };
   return { hrrr: 0, nbm: 0, gfs: 1.0 };
 }
