@@ -61,13 +61,19 @@ export default function DailyWeatherChart({ forecasts, hourlyForecasts, unit = '
   const precipChartFraction = 0.22;
   const precipToY = (prob: number) => yMin + prob * (yMax - yMin) * precipChartFraction;
 
-  // Smooth precipitation data
+  // Smooth precipitation data, then filter noise.
+  // If raw probability never exceeds 15% for a day, zero it out — it's weather noise
+  // (e.g., 9% with 0.008" accumulation shouldn't show on the chart).
   const rawPrecip = data.map(d => d.precipProb);
-  const smoothedPrecip = gaussianSmooth(rawPrecip, 1.5);
+  const smoothedPrecip = gaussianSmooth(rawPrecip, 1.5).map((val, i) => {
+    // Zero out smoothed values where the raw data is noise (< 15% and < 0.01" accum)
+    if (rawPrecip[i] < 0.15 && data[i].precipAccum < 0.01) return precipToY(0);
+    return precipToY(val);
+  });
 
   const chartData = data.map((d, i) => ({
     ...d,
-    smoothPrecip: precipToY(smoothedPrecip[i]),
+    smoothPrecip: smoothedPrecip[i],
     precipBase: yMin,
   }));
 
