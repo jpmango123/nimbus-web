@@ -115,6 +115,7 @@ export async function GET() {
       windAccuracy: '',
       conditionAccuracy: '',
       modelRanking: '',
+      iosErrors: '',
       ux: '',
       dataVsDisplay: '',
     };
@@ -209,7 +210,14 @@ export async function GET() {
           .catch(e => { analyses.modelRanking = `Unavailable: ${e}`; })
       );
 
-      // L. UX/Display intelligence
+      // L. iOS error log analysis
+      tasks.push(
+        analyzeIosErrors(claudeKey, sql)
+          .then(r => { analyses.iosErrors = r; })
+          .catch(e => { analyses.iosErrors = `Unavailable: ${e}`; })
+      );
+
+      // M. UX/Display intelligence
       if (screenshots.length > 0) {
         tasks.push(
           analyzeUX(claudeKey, screenshots)
@@ -266,6 +274,7 @@ export async function GET() {
       { category: 'accuracy', summary: 'Wind forecast accuracy', key: 'windAccuracy' },
       { category: 'accuracy', summary: 'Condition/icon accuracy', key: 'conditionAccuracy' },
       { category: 'accuracy', summary: 'Dynamic model ranking (HRRR vs NBM vs GFS)', key: 'modelRanking' },
+      { category: 'bug_fix', summary: 'iOS error log analysis', key: 'iosErrors' },
       { category: 'visual', summary: 'UX/Display: hierarchy, accessibility, layout', key: 'ux' },
       { category: 'bug_fix', summary: 'Data vs Display: API data vs chart rendering consistency', key: 'dataVsDisplay' },
     ];
@@ -1340,6 +1349,73 @@ ${rankingTable}
 4. **Precipitation skill** — Which model had the lowest precipitation MAE? This is critical since precipitation blending is the hardest to get right.
 5. **Dynamic weight recommendations** — Based on this week's performance, suggest specific weight adjustments. Be conservative (±0.05 changes). The app uses consensus-weighted blending for precipitation, so weight changes primarily affect temperature blending.
 6. **Blended vs best individual** — If the blended forecast is worse than the best individual model, the blending strategy needs adjustment. Is it adding value?`;
+
+  return await callClaudeText(apiKey, prompt);
+}
+
+// MARK: - iOS Error Log Analysis
+
+async function analyzeIosErrors(apiKey: string, sql: NeonSql): Promise<string> {
+  const since = new Date(Date.now() - 24 * 3600000).toISOString();
+  const errors = await sql`
+    SELECT timestamp, level, category, message, context, app_version, os_version
+    FROM error_logs
+    WHERE timestamp > ${since}
+    ORDER BY timestamp DESC
+    LIMIT 100
+  `;
+
+  if (!errors.length) {
+    return 'No iOS errors reported in the last 24 hours.';
+  }
+
+  // Categorize errors
+  const byCategory: Record<string, number> = {};
+  const byLevel: Record<string, number> = {};
+  for (const err of errors) {
+    const cat = (err.category as string) || 'uncategorized';
+    const lvl = (err.level as string) || 'error';
+    byCategory[cat] = (byCategory[cat] || 0) + 1;
+    byLevel[lvl] = (byLevel[lvl] || 0) + 1;
+  }
+
+  const categorySummary = Object.entries(byCategory)
+    .sort((a, b) => b[1] - a[1])
+    .map(([cat, count]) => `  ${cat}: ${count}`)
+    .join('\n');
+
+  const levelSummary = Object.entries(byLevel)
+    .sort((a, b) => b[1] - a[1])
+    .map(([lvl, count]) => `  ${lvl}: ${count}`)
+    .join('\n');
+
+  const sampleErrors = errors.slice(0, 20).map(e =>
+    `  [${(e.level as string).toUpperCase()}] ${new Date(e.timestamp as string).toLocaleTimeString()} ${e.category || ''}: ${e.message}${e.context ? ` | ctx: ${(e.context as string).slice(0, 100)}` : ''}`
+  ).join('\n');
+
+  const prompt = `You are a senior iOS developer reviewing error logs from the Nimbus weather app (production, real user device).
+
+## Error Summary (Last 24 Hours)
+- Total errors: ${errors.length}
+- App version: ${errors[0]?.app_version || 'unknown'}
+- OS version: ${errors[0]?.os_version || 'unknown'}
+
+## By Level
+${levelSummary}
+
+## By Category
+${categorySummary}
+
+## Sample Errors (Most Recent)
+${sampleErrors}
+
+## Analysis Required
+1. **Critical issues** — Are there any crash-level or data-loss errors? These need immediate fixes.
+2. **Recurring patterns** — Which errors repeat most? A networking error happening 50 times suggests an API reliability issue.
+3. **User impact** — Which errors would the user actually notice (blank screens, wrong data, missing features)?
+4. **Root cause grouping** — Group related errors that likely share a root cause. E.g., multiple "timeout" errors from different categories all trace to slow network.
+5. **Recommended fixes** — For the top 3 most impactful errors, suggest specific code fixes with file paths and what to change.
+6. **Severity assessment** — Rate overall app health: Healthy (< 5 errors/day), Degraded (5-20), Unhealthy (20+), Critical (crashes or data loss).`;
 
   return await callClaudeText(apiKey, prompt);
 }

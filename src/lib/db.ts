@@ -107,6 +107,23 @@ CREATE TABLE IF NOT EXISTS hourly_actuals (
     UNIQUE(location_id, hour)
 );
 
+-- iOS app error logs (uploaded a few times per day for AI review)
+CREATE TABLE IF NOT EXISTS error_logs (
+    id              SERIAL PRIMARY KEY,
+    device_id       TEXT NOT NULL,
+    timestamp       TIMESTAMPTZ NOT NULL,
+    level           TEXT NOT NULL DEFAULT 'error',
+    category        TEXT,
+    message         TEXT NOT NULL,
+    context         TEXT,
+    app_version     TEXT,
+    os_version      TEXT,
+    uploaded_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_error_logs_timestamp ON error_logs(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_error_logs_level ON error_logs(level, timestamp DESC);
+
 -- Migrations (safe to re-run)
 ALTER TABLE actual_weather ADD COLUMN IF NOT EXISTS actual_precip_type TEXT;
 ALTER TABLE actual_weather ADD COLUMN IF NOT EXISTS actual_wind_speed DOUBLE PRECISION;
