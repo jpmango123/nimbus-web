@@ -77,6 +77,36 @@ CREATE TABLE IF NOT EXISTS screenshots (
     metadata    JSONB
 );
 
+-- Hourly forecast snapshots (stores the 48h forecast curve at each audit)
+-- This lets us compare "what the graph showed" vs what actually happened
+CREATE TABLE IF NOT EXISTS hourly_forecast_snapshots (
+    id              SERIAL PRIMARY KEY,
+    location_id     INT REFERENCES locations(id) ON DELETE CASCADE,
+    captured_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    target_hour     TIMESTAMPTZ NOT NULL,
+    hours_ahead     INT NOT NULL,
+    predicted_temp  DOUBLE PRECISION,
+    predicted_precip_prob   DOUBLE PRECISION,
+    predicted_precip_accum  DOUBLE PRECISION,
+    predicted_precip_type   TEXT,
+    predicted_wind_speed    DOUBLE PRECISION,
+    predicted_condition     TEXT
+);
+
+-- Hourly actual weather (for graph accuracy comparison)
+CREATE TABLE IF NOT EXISTS hourly_actuals (
+    id              SERIAL PRIMARY KEY,
+    location_id     INT REFERENCES locations(id) ON DELETE CASCADE,
+    hour            TIMESTAMPTZ NOT NULL,
+    actual_temp     DOUBLE PRECISION,
+    actual_precip   DOUBLE PRECISION,
+    actual_snowfall DOUBLE PRECISION,
+    actual_wind_speed DOUBLE PRECISION,
+    weather_code    INT,
+    source          TEXT DEFAULT 'open-meteo-historical',
+    UNIQUE(location_id, hour)
+);
+
 -- Migrations (safe to re-run)
 ALTER TABLE actual_weather ADD COLUMN IF NOT EXISTS actual_precip_type TEXT;
 ALTER TABLE actual_weather ADD COLUMN IF NOT EXISTS actual_wind_speed DOUBLE PRECISION;
@@ -86,6 +116,9 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_location_date ON forecast_snapshots(loc
 CREATE INDEX IF NOT EXISTS idx_actual_location_date ON actual_weather(location_id, date);
 CREATE INDEX IF NOT EXISTS idx_changelog_created ON ai_changelog(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_screenshots_location ON screenshots(location_id, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hourly_snapshots_loc_hour ON hourly_forecast_snapshots(location_id, target_hour);
+CREATE INDEX IF NOT EXISTS idx_hourly_snapshots_captured ON hourly_forecast_snapshots(captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hourly_actuals_loc_hour ON hourly_actuals(location_id, hour);
 `;
 
 export async function setupDatabase() {

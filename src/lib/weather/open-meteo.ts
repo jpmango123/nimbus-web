@@ -206,6 +206,123 @@ async function fetchModel(modelKey: ModelKey, lat: number, lon: number): Promise
   }
 }
 
+/** Validate that HRRR hourly data is real (not a data ingestion failure).
+ *  HRRR sometimes returns 0°F temps which means the API returned no data. */
+function isValidHourly(h: HourlyForecast): boolean {
+  // Reject impossibly cold temps (HRRR zero-value failure)
+  if (h.temperature === 0 && h.feelsLike === 0) return false;
+  // Reject if temp is outside physically plausible range for CONUS
+  if (h.temperature < -60 || h.temperature > 140) return false;
+  return true;
+}
+
+/** Consensus-weighted precipitation blending.
+ *  Instead of simple weighted average (which dilutes storm signals),
+ *  uses model agreement to decide between averaging and max-of-models.
+ *
+ *  Meteorological rationale:
+ *  - If all models agree on precip, weighted average is fine
+ *  - If models disagree strongly, one model "sees" a storm the others don't
+ *    → use the precipitating model's value scaled by consensus fraction
+ *  - Probability uses the max across models (if ANY model says 80%, report it)
+ *    weighted by how many models agree
+ */
+function blendPrecipitation(
+  candidates: { data: HourlyForecast; model: ModelKey }[],
+  weights: Record<ModelKey, number>,
+  totalWeight: number,
+): { probability: number; intensity: number; accumulation: number } {
+  if (candidates.length === 0) return { probability: 0, intensity: 0, accumulation: 0 };
+  if (candidates.length === 1) {
+    const d = candidates[0].data;
+    return { probability: d.precipProbability, intensity: d.precipIntensity, accumulation: d.precipAccumulation };
+  }
+
+  const probs = candidates.map(c => c.data.precipProbability);
+  const amounts = candidates.map(c => c.data.precipAccumulation);
+  const intensities = candidates.map(c => c.data.precipIntensity);
+
+  // How many models show significant precipitation?
+  const precipThreshold = 0.01; // inches
+  const probThreshold = 0.15;   // 15%
+  const precipitatingModels = candidates.filter(
+    c => c.data.precipAccumulation > precipThreshold || c.data.precipProbability > probThreshold
+  );
+  const consensusFraction = precipitatingModels.length / candidates.length;
+
+  // PROBABILITY: Use weighted-max approach
+  // If any high-skill model says high probability, don't average it away
+  const maxProb = Math.max(...probs);
+  const weightedAvgProb = candidates.reduce(
+    (s, c) => s + c.data.precipProbability * weights[c.model] / totalWeight, 0
+  );
+  // Blend between max and average based on consensus
+  // High consensus → trust average; low consensus → lean toward max (one model sees something)
+  const probability = consensusFraction >= 0.5
+    ? weightedAvgProb * 0.6 + maxProb * 0.4
+    : weightedAvgProb * 0.3 + maxProb * 0.7;
+
+  // AMOUNT: Use consensus-scaled approach
+  const maxAmount = Math.max(...amounts);
+  const maxIntensity = Math.max(...intensities);
+
+  if (maxAmount <= precipThreshold) {
+    // No significant precip from any model — simple weighted average
+    const intensity = candidates.reduce(
+      (s, c) => s + c.data.precipIntensity * weights[c.model] / totalWeight, 0
+    );
+    const accumulation = candidates.reduce(
+      (s, c) => s + c.data.precipAccumulation * weights[c.model] / totalWeight, 0
+    );
+    return { probability, intensity, accumulation };
+  }
+
+  if (consensusFraction >= 0.5) {
+    // Majority of models agree on precip — weighted average is reasonable
+    const intensity = candidates.reduce(
+      (s, c) => s + c.data.precipIntensity * weights[c.model] / totalWeight, 0
+    );
+    const accumulation = candidates.reduce(
+      (s, c) => s + c.data.precipAccumulation * weights[c.model] / totalWeight, 0
+    );
+    return { probability, intensity, accumulation };
+  }
+
+  // Low consensus: one model sees a storm others don't
+  // Use the precipitating model's value, scaled down by consensus but never below 30%
+  // This preserves storm signals that would otherwise be averaged to nothing
+  const scaleFactor = Math.max(0.3, consensusFraction);
+  return {
+    probability,
+    intensity: maxIntensity * scaleFactor,
+    accumulation: maxAmount * scaleFactor,
+  };
+}
+
+/** Determine blended precipitation type using temperature-aware voting.
+ *  At marginal temps (28-36°F), boost snow predictions. */
+function blendPrecipType(
+  candidates: { data: HourlyForecast; model: ModelKey }[],
+  blendedTemp: number,
+): PrecipitationType {
+  const votes: Record<string, number> = { rain: 0, snow: 0, sleet: 0, none: 0 };
+  for (const c of candidates) {
+    let weight = 1;
+    const type = c.data.precipType;
+    // At marginal temps, boost snow/sleet predictions
+    if (blendedTemp >= 28 && blendedTemp <= 36) {
+      if (type === 'snow') weight = 1.4;
+      else if (type === 'rain') weight = 0.6;
+    }
+    votes[type] += weight;
+  }
+  // If blended temp strongly suggests a type, override
+  if (votes.none > votes.rain + votes.snow + votes.sleet) return 'none';
+  // Only consider precipitating types
+  const precipVotes = Object.entries(votes).filter(([k]) => k !== 'none').sort((a, b) => b[1] - a[1]);
+  return (precipVotes[0]?.[0] as PrecipitationType) || 'none';
+}
+
 export async function fetchBlendedWeather(location: LocationInfo): Promise<WeatherData> {
   const { latitude, longitude } = location;
 
@@ -240,7 +357,10 @@ export async function fetchBlendedWeather(location: LocationInfo): Promise<Weath
   const blendedHourly: HourlyForecast[] = [];
   for (let i = 0; i < maxLen; i++) {
     const candidates: { data: HourlyForecast; model: ModelKey }[] = [];
-    if (hrrrData && i < hrrrData.hourly.length) candidates.push({ data: hrrrData.hourly[i], model: 'hrrr' });
+    // Validate HRRR data before including it
+    if (hrrrData && i < hrrrData.hourly.length && isValidHourly(hrrrData.hourly[i])) {
+      candidates.push({ data: hrrrData.hourly[i], model: 'hrrr' });
+    }
     if (nbmData && i < nbmData.hourly.length) candidates.push({ data: nbmData.hourly[i], model: 'nbm' });
     if (gfsData && i < gfsData.hourly.length) candidates.push({ data: gfsData.hourly[i], model: 'gfs' });
 
@@ -253,32 +373,71 @@ export async function fetchBlendedWeather(location: LocationInfo): Promise<Weath
     let totalWeight = candidates.reduce((s, c) => s + weights[c.model], 0);
     if (totalWeight === 0) totalWeight = 1;
 
-    const blend = (getter: (h: HourlyForecast) => number) =>
+    // Temperature: standard weighted average (works well for continuous values)
+    const blendTemp = (getter: (h: HourlyForecast) => number) =>
       candidates.reduce((s, c) => s + getter(c.data) * weights[c.model] / totalWeight, 0);
+
+    const blendedTemperature = blendTemp(h => h.temperature);
+
+    // Precipitation: consensus-weighted blending (handles storm disagreement)
+    const precip = blendPrecipitation(candidates, weights, totalWeight);
+
+    // Precipitation type: temperature-aware voting
+    const precipType = blendPrecipType(candidates, blendedTemperature);
 
     const base = candidates[0].data;
     blendedHourly.push({
       ...base,
-      temperature: blend(h => h.temperature),
-      feelsLike: blend(h => h.feelsLike),
-      humidity: blend(h => h.humidity),
-      windSpeed: blend(h => h.windSpeed),
-      precipProbability: blend(h => h.precipProbability),
-      precipIntensity: blend(h => h.precipIntensity),
-      precipAccumulation: blend(h => h.precipAccumulation),
+      temperature: blendedTemperature,
+      feelsLike: blendTemp(h => h.feelsLike),
+      humidity: blendTemp(h => h.humidity),
+      windSpeed: blendTemp(h => h.windSpeed),
+      precipProbability: precip.probability,
+      precipIntensity: precip.intensity,
+      precipAccumulation: precip.accumulation,
+      precipType,
       precipAmountLow: Math.min(...candidates.map(c => c.data.precipAccumulation)),
       precipAmountHigh: Math.max(...candidates.map(c => c.data.precipAccumulation)),
     });
   }
 
-  // Use the longest daily forecast available
-  const daily = (gfsData ?? nbmData ?? hrrrData)!.daily;
+  // Blend daily forecasts (don't just use GFS — blend highs/lows too)
+  const dailySources = [hrrrData, nbmData, gfsData].filter(Boolean) as WeatherData[];
+  const longestDaily = dailySources.reduce((a, b) => a.daily.length >= b.daily.length ? a : b);
+  const blendedDaily: DailyForecast[] = longestDaily.daily.map((baseDay, dayIdx) => {
+    const dayCandidates: DailyForecast[] = [];
+    for (const src of dailySources) {
+      if (dayIdx < src.daily.length) dayCandidates.push(src.daily[dayIdx]);
+    }
+    if (dayCandidates.length <= 1) return baseDay;
+
+    // Simple average for daily temp (all models usually available)
+    const avgHigh = dayCandidates.reduce((s, d) => s + d.temperatureHigh, 0) / dayCandidates.length;
+    const avgLow = dayCandidates.reduce((s, d) => s + d.temperatureLow, 0) / dayCandidates.length;
+
+    // For daily precip, use max probability and consensus-scaled accumulation
+    const maxProb = Math.max(...dayCandidates.map(d => d.precipProbability));
+    const avgProb = dayCandidates.reduce((s, d) => s + d.precipProbability, 0) / dayCandidates.length;
+    const precipModels = dayCandidates.filter(d => d.precipAccumulation > 0.01);
+    const consensus = precipModels.length / dayCandidates.length;
+    const maxAccum = Math.max(...dayCandidates.map(d => d.precipAccumulation));
+    const avgAccum = dayCandidates.reduce((s, d) => s + d.precipAccumulation, 0) / dayCandidates.length;
+
+    return {
+      ...baseDay,
+      temperatureHigh: avgHigh,
+      temperatureLow: avgLow,
+      precipProbability: consensus >= 0.5 ? avgProb * 0.6 + maxProb * 0.4 : avgProb * 0.3 + maxProb * 0.7,
+      precipAccumulation: consensus >= 0.5 ? avgAccum : maxAccum * Math.max(0.3, consensus),
+      snowAccumulation: Math.max(...dayCandidates.map(d => d.snowAccumulation)) * Math.max(0.3, consensus),
+    };
+  });
 
   return {
     location,
     current,
     hourly: blendedHourly,
-    daily,
+    daily: blendedDaily,
     stormEvents: [],
     weatherAlerts: [],
     minutely: (hrrrData ?? nbmData ?? gfsData)?.minutely ?? null,
@@ -391,6 +550,51 @@ export async function fetchHistoricalWeather(
       condition: wmoToCondition(d.weather_code[0], true),
       windSpeedMax: d.wind_speed_10m_max?.[0] ?? null,
     };
+  } catch {
+    return null;
+  }
+}
+
+// MARK: - Hourly Historical Weather (for graph accuracy comparison)
+
+export interface HourlyActual {
+  time: string;           // ISO 8601
+  temperature: number;    // °F
+  precipitation: number;  // inches (1h total)
+  snowfall: number;       // inches (1h)
+  windSpeed: number;      // mph
+  weatherCode: number;
+}
+
+/** Fetch hourly historical weather for a date range.
+ *  Used to compare hourly forecast graphs against what actually happened. */
+export async function fetchHourlyHistorical(
+  lat: number,
+  lon: number,
+  startDate: string, // YYYY-MM-DD
+  endDate: string,   // YYYY-MM-DD
+): Promise<HourlyActual[] | null> {
+  const url = `${HISTORICAL_URL}?latitude=${lat}&longitude=${lon}` +
+    `&start_date=${startDate}&end_date=${endDate}` +
+    `&hourly=temperature_2m,precipitation,snowfall,wind_speed_10m,weather_code` +
+    `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch` +
+    `&timezone=auto`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const h = data.hourly;
+    if (!h || !h.time?.length) return null;
+
+    return h.time.map((_: string, i: number) => ({
+      time: new Date(h.time[i]).toISOString(),
+      temperature: h.temperature_2m[i],
+      precipitation: h.precipitation[i] || 0,
+      snowfall: cmToInches(h.snowfall?.[i] || 0),
+      windSpeed: h.wind_speed_10m?.[i] || 0,
+      weatherCode: h.weather_code?.[i] || 0,
+    }));
   } catch {
     return null;
   }

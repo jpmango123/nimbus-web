@@ -109,6 +109,7 @@ export async function GET() {
       blending: '',
       meteorological: '',
       calibration: '',
+      hourlyAccuracy: '',
       ux: '',
       dataVsDisplay: '',
     };
@@ -161,7 +162,14 @@ export async function GET() {
           .catch(e => { analyses.calibration = `Unavailable: ${e}`; })
       );
 
-      // F. UX/Display intelligence
+      // F. Hourly accuracy + Brier skill score
+      tasks.push(
+        analyzeHourlyAccuracy(claudeKey, sql, weekAgo)
+          .then(r => { analyses.hourlyAccuracy = r; })
+          .catch(e => { analyses.hourlyAccuracy = `Unavailable: ${e}`; })
+      );
+
+      // G. UX/Display intelligence
       if (screenshots.length > 0) {
         tasks.push(
           analyzeUX(claudeKey, screenshots)
@@ -208,6 +216,7 @@ export async function GET() {
       { category: 'visual', summary: `Visual audit: ${screenshots.length} screenshots analyzed`, key: 'visual' },
       { category: 'accuracy', summary: 'Meteorological intelligence: storms, precip type, diurnal bias', key: 'meteorological' },
       { category: 'accuracy', summary: 'Confidence calibration & model skill scoring', key: 'calibration' },
+      { category: 'accuracy', summary: 'Hourly forecast accuracy + Brier skill score', key: 'hourlyAccuracy' },
       { category: 'visual', summary: 'UX/Display: hierarchy, accessibility, layout', key: 'ux' },
       { category: 'bug_fix', summary: 'Data vs Display: API data vs chart rendering consistency', key: 'dataVsDisplay' },
     ];
@@ -234,7 +243,7 @@ export async function GET() {
 
         if (allFindings.length > 200) {
           appliedFixes = await generateFixes(claudeKey, allFindings,
-            'The app uses Open-Meteo blended HRRR/NBM/GFS. Web app is Next.js/TypeScript. iOS app is SwiftUI.');
+            'The app uses Open-Meteo blended HRRR/NBM/GFS with consensus-weighted precipitation blending (preserves storm signals when models disagree). HRRR data is validated to reject zero-value failures. Web app is Next.js/TypeScript. iOS app is SwiftUI. Temperature uses weighted average, precipitation uses consensus-scaled approach with 30% floor to prevent storm signal loss.');
 
           if (appliedFixes.length > 0) {
             // Apply web app changes via GitHub API
@@ -718,6 +727,140 @@ ${modelSkillSection || 'Per-model data not yet available.'}
 6. **Skill by Forecast Horizon** — Is our 1-day forecast much better than our 5-day forecast (as expected)? Or is there a specific horizon where accuracy drops sharply, suggesting a model handoff problem?
 
 Recommend specific algorithmic changes with numbers. These will be implemented in the app's blending code.`;
+
+  return await callClaudeText(apiKey, prompt);
+}
+
+// MARK: - Hourly Accuracy & Brier Skill Score Analysis
+
+async function analyzeHourlyAccuracy(apiKey: string, sql: NeonSql, weekAgo: string): Promise<string> {
+  // Compare hourly forecast snapshots against hourly actuals
+  const hourlyComparison = await sql`
+    SELECT
+      l.name as location_name,
+      hfs.target_hour,
+      hfs.hours_ahead,
+      hfs.predicted_temp,
+      hfs.predicted_precip_prob,
+      hfs.predicted_precip_accum,
+      hfs.predicted_precip_type,
+      ha.actual_temp,
+      ha.actual_precip,
+      ha.actual_snowfall,
+      ha.weather_code
+    FROM hourly_forecast_snapshots hfs
+    JOIN hourly_actuals ha ON ha.location_id = hfs.location_id AND ha.hour = hfs.target_hour
+    JOIN locations l ON l.id = hfs.location_id
+    WHERE hfs.captured_at > ${weekAgo}
+      AND hfs.hours_ahead BETWEEN 3 AND 36
+    ORDER BY hfs.target_hour DESC
+    LIMIT 200
+  `;
+
+  if (!hourlyComparison.length) {
+    return 'Not enough hourly data yet for accuracy analysis. Need at least 2 days of hourly forecast snapshots + actuals. Data will be available soon as audits continue.';
+  }
+
+  // Calculate Brier skill score for precipitation probability
+  // Brier score = mean((predicted_prob - actual_outcome)^2)
+  // Perfect score = 0, climatology baseline ~0.25, worse than climatology > 0.25
+  let brierSum = 0;
+  let brierCount = 0;
+  let tempErrorSum = 0;
+  let tempErrorCount = 0;
+  const hourBuckets: Record<string, { tempErrors: number[]; precipHits: number; precipMisses: number; falseAlarms: number; correctNulls: number }> = {};
+
+  for (const row of hourlyComparison) {
+    const predProb = row.predicted_precip_prob as number;
+    const actualPrecip = row.actual_precip as number;
+    const actualOutcome = actualPrecip > 0.005 ? 1 : 0; // Did it actually rain?
+    const predTemp = row.predicted_temp as number;
+    const actualTemp = row.actual_temp as number;
+    const hrsAhead = row.hours_ahead as number;
+
+    // Brier score
+    brierSum += (predProb - actualOutcome) ** 2;
+    brierCount++;
+
+    // Temp error
+    if (predTemp != null && actualTemp != null) {
+      tempErrorSum += Math.abs(predTemp - actualTemp);
+      tempErrorCount++;
+    }
+
+    // Bucket by forecast horizon
+    const bucket = hrsAhead <= 6 ? '0-6h' : hrsAhead <= 12 ? '6-12h' : hrsAhead <= 24 ? '12-24h' : '24-36h';
+    if (!hourBuckets[bucket]) hourBuckets[bucket] = { tempErrors: [], precipHits: 0, precipMisses: 0, falseAlarms: 0, correctNulls: 0 };
+    hourBuckets[bucket].tempErrors.push(Math.abs(predTemp - actualTemp));
+
+    // Contingency table for precip
+    if (predProb > 0.3 && actualOutcome === 1) hourBuckets[bucket].precipHits++;
+    else if (predProb <= 0.3 && actualOutcome === 1) hourBuckets[bucket].precipMisses++;
+    else if (predProb > 0.3 && actualOutcome === 0) hourBuckets[bucket].falseAlarms++;
+    else hourBuckets[bucket].correctNulls++;
+  }
+
+  const brierScore = brierCount > 0 ? brierSum / brierCount : null;
+  const avgTempError = tempErrorCount > 0 ? tempErrorSum / tempErrorCount : null;
+
+  // Build summary for Claude
+  const bucketSummary = Object.entries(hourBuckets)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([bucket, data]) => {
+      const avgTE = data.tempErrors.length > 0
+        ? (data.tempErrors.reduce((s, v) => s + v, 0) / data.tempErrors.length).toFixed(1)
+        : 'N/A';
+      const total = data.precipHits + data.precipMisses + data.falseAlarms + data.correctNulls;
+      const hitRate = total > 0 ? ((data.precipHits / Math.max(1, data.precipHits + data.precipMisses)) * 100).toFixed(0) : 'N/A';
+      const falseAlarmRate = total > 0 ? ((data.falseAlarms / Math.max(1, data.falseAlarms + data.correctNulls)) * 100).toFixed(0) : 'N/A';
+      return `  ${bucket}: avgTempError=${avgTE}°F, precipHitRate=${hitRate}%, falseAlarmRate=${falseAlarmRate}% (${total} hours)`;
+    })
+    .join('\n');
+
+  // Sample of specific misses for Claude to analyze
+  const significantMisses = hourlyComparison
+    .filter(r => {
+      const predProb = r.predicted_precip_prob as number;
+      const actual = r.actual_precip as number;
+      return (predProb > 0.5 && actual < 0.005) || (predProb < 0.15 && actual > 0.05);
+    })
+    .slice(0, 10)
+    .map(r => `  ${r.location_name} ${new Date(r.target_hour as string).toLocaleString()}: predicted ${Math.round((r.predicted_precip_prob as number) * 100)}% prob / ${(r.predicted_precip_accum as number)?.toFixed(2)}" | actual ${(r.actual_precip as number)?.toFixed(2)}" (${r.hours_ahead}h ahead)`)
+    .join('\n');
+
+  const prompt = `You are a meteorologist and data scientist analyzing HOURLY forecast accuracy for the Nimbus weather app.
+
+## Overall Metrics
+- Brier Skill Score: ${brierScore != null ? brierScore.toFixed(4) : 'insufficient data'} (0=perfect, 0.25=climatology baseline, >0.25=worse than guessing)
+- Average Temperature Error: ${avgTempError != null ? avgTempError.toFixed(1) + '°F' : 'insufficient data'}
+- Total hourly comparisons: ${brierCount}
+
+## Accuracy by Forecast Horizon
+${bucketSummary}
+
+## Significant Prediction Failures (missed events or false alarms)
+${significantMisses || '  No significant failures found (good sign)'}
+
+## Your Analysis
+Evaluate as a meteorologist:
+
+1. **Brier Score Interpretation** — Is ${brierScore?.toFixed(4)} good for a blended NWP model? Compare against typical values for operational forecasts (NWS: ~0.08-0.12 for 24h precipitation). If worse, what does it suggest about the blending?
+
+2. **Skill Degradation by Lead Time** — How fast does skill drop from 0-6h to 24-36h? Is the degradation expected for the model types (HRRR=convective, NBM=calibrated, GFS=synoptic)?
+
+3. **False Alarm vs Miss Balance** — Is the app over-predicting precip (many false alarms but few misses) or under-predicting (few false alarms but many misses)? For a weather app, which is worse? Recommend threshold adjustments.
+
+4. **Temperature Error Patterns** — ${avgTempError?.toFixed(1)}°F average hourly error — is this acceptable? Does it worsen at specific horizons?
+
+5. **Specific Failure Analysis** — For each missed event above, hypothesize what went wrong (model timing error? blending diluted signal? type misclassification?) and suggest a fix.
+
+6. **Concrete Recommendations** — Suggest specific code changes:
+   - Should the precipitation probability threshold for display change?
+   - Should the Gaussian smoothing sigma change?
+   - Should the blending weights be adjusted based on hourly performance?
+   - Should the consensus-weighted precip blending be tuned (currently using 30% floor)?
+
+Be specific with numbers and file/variable references.`;
 
   return await callClaudeText(apiKey, prompt);
 }

@@ -5,10 +5,10 @@
 
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { fetchOpenMeteoWeather, fetchHistoricalWeather, fetchPerModelData } from '@/lib/weather/open-meteo';
+import { fetchOpenMeteoWeather, fetchHistoricalWeather, fetchHourlyHistorical, fetchPerModelData } from '@/lib/weather/open-meteo';
 import { LocationInfo } from '@/lib/weather/types';
 
-export const maxDuration = 60;
+export const maxDuration = 120; // Increased for hourly data storage
 
 export async function GET() {
   const results: string[] = [];
@@ -112,6 +112,66 @@ export async function GET() {
             if (dayBack === 1) {
               results.push(`  ↳ Actual for ${pastDateStr}: H${Math.round(actual.high)}° L${Math.round(actual.low)}° precip ${actual.precipTotal.toFixed(2)}" (${actual.precipType})`);
             }
+          }
+        }
+
+        // 5. Store hourly forecast snapshots (next 48h)
+        // This captures "what the graph looked like" at this point in time
+        const hourlyToStore = weather.hourly.slice(0, 48);
+        if (hourlyToStore.length > 0) {
+          // Batch insert — store every 3rd hour to save space (16 rows per audit per location)
+          for (let hi = 0; hi < hourlyToStore.length; hi += 3) {
+            const h = hourlyToStore[hi];
+            const targetHour = new Date(h.time).toISOString();
+            const hrsAhead = Math.round(
+              (new Date(h.time).getTime() - now.getTime()) / 3600000
+            );
+            await sql`
+              INSERT INTO hourly_forecast_snapshots
+                (location_id, captured_at, target_hour, hours_ahead,
+                 predicted_temp, predicted_precip_prob, predicted_precip_accum,
+                 predicted_precip_type, predicted_wind_speed, predicted_condition)
+              VALUES
+                (${loc.id}, ${now.toISOString()}, ${targetHour}, ${hrsAhead},
+                 ${h.temperature}, ${h.precipProbability}, ${h.precipAccumulation},
+                 ${h.precipType}, ${h.windSpeed}, ${h.condition})
+            `;
+          }
+          results.push(`  ↳ Stored ${Math.ceil(hourlyToStore.length / 3)} hourly snapshots`);
+        }
+
+        // 6. Fetch hourly actuals for yesterday (for graph accuracy comparison)
+        const yesterday = new Date(now.getTime() - 86400000);
+        const yesterdayStr = yesterday.toISOString().slice(0, 10);
+
+        // Check if we already have hourly actuals for yesterday
+        const existingHourly = await sql`
+          SELECT 1 FROM hourly_actuals
+          WHERE location_id = ${loc.id}
+            AND hour >= ${yesterdayStr + 'T00:00:00Z'}
+            AND hour < ${yesterdayStr + 'T23:59:59Z'}
+          LIMIT 1
+        `;
+
+        if (existingHourly.length === 0) {
+          const hourlyActuals = await fetchHourlyHistorical(
+            location.latitude, location.longitude, yesterdayStr, yesterdayStr
+          );
+
+          if (hourlyActuals && hourlyActuals.length > 0) {
+            for (const ha of hourlyActuals) {
+              await sql`
+                INSERT INTO hourly_actuals
+                  (location_id, hour, actual_temp, actual_precip, actual_snowfall,
+                   actual_wind_speed, weather_code, source)
+                VALUES
+                  (${loc.id}, ${ha.time}, ${ha.temperature}, ${ha.precipitation},
+                   ${ha.snowfall}, ${ha.windSpeed}, ${ha.weatherCode},
+                   'open-meteo-historical')
+                ON CONFLICT (location_id, hour) DO NOTHING
+              `;
+            }
+            results.push(`  ↳ Stored ${hourlyActuals.length} hourly actuals for ${yesterdayStr}`);
           }
         }
 
