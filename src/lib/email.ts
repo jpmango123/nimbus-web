@@ -22,6 +22,11 @@ export async function sendNightlyReport(subject: string, htmlBody: string): Prom
       subject,
       html: htmlBody,
     });
+
+    // Check for Resend error response (SDK doesn't always throw)
+    if (result.error) {
+      throw new Error(`Resend error: ${result.error.message} (name: ${result.error.name})`);
+    }
     console.log(`[EMAIL] Sent to ${toEmail}: id=${result.data?.id || 'unknown'}`);
 
     // Also log to error_logs so we can verify delivery
