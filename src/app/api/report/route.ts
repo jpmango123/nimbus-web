@@ -397,18 +397,25 @@ async function callClaudeVision(apiKey: string, screenshots: ScreenshotResult[])
     type: 'text',
     text: `You are a weather app UI/UX expert reviewing the Nimbus Weather web app. These screenshots show the dashboard and widget views.
 
-Please evaluate:
+Please evaluate — FOCUS HEAVILY ON PRECIPITATION ACCURACY:
 
-1. **Chart Readability** — Are the temperature curves smooth and easy to follow? Are labels readable? Is the Y-axis scaling appropriate?
-2. **Precipitation Graphs** — Do the precipitation area fills look correct? Are the gradient opacities working well? Do the Catmull-Rom curves look smooth or jagged?
-3. **Color & Contrast** — Is the temperature-to-color mapping working correctly (blue=cold, green=mild, yellow=warm, red=hot)? Are precip overlays visible but not overwhelming?
-4. **Widget Appearance** — Do the small/medium/large widgets look like proper iOS widgets? Are they the right proportions? Is text legible at widget sizes?
-5. **Data Display** — Are there any obvious data glitches (e.g., impossible temperatures, flat lines that should have variation, missing data)?
-6. **Layout & Spacing** — Are charts well-spaced? Any overlapping elements? Any charts that look cramped or too spread out?
-7. **Specific Improvements** — List concrete, actionable changes (e.g., "increase precipitation area opacity from 0.35 to 0.45", "add more Y-axis labels to the daily chart", "the hourly chart needs night shading").
+1. **Precipitation Curve Shape** — Are the precipitation curves smooth domes/hills, or do they look jagged, pointed, blocky, or flat? A good precip curve should look like a smooth bell curve, not a triangle or rectangle. Flag any curve that looks "off" visually.
 
-Be specific with numbers and values. These recommendations will be used to improve both the web app and the iOS app.
-Focus on what looks wrong or could look better — don't just describe what you see.`,
+2. **Ghost Precipitation** — Are there any precipitation curves showing where there SHOULDN'T be precipitation? Look for tiny blips, thin lines, or faint fills on days that appear dry (no rain/snow icon). These are display artifacts from low-probability noise (< 15%) leaking through the Gaussian smoothing.
+
+3. **Missing Precipitation** — Are there days with rain/snow icons but NO precipitation curve below them? This means the chart is hiding real precipitation data. The precipitation fill should appear for any day with a rain/snow/sleet icon.
+
+4. **Chart vs Forecast Consistency** — Does the size of the precipitation curve match the severity shown by the weather icons? A day with a heavy rain icon should have a large precipitation dome. A day with a light drizzle icon should have a small dome. If a heavy rain icon has a tiny curve (or vice versa), flag it.
+
+5. **Precipitation Color** — Is precipitation colored correctly? Rain should be BLUE, snow should be WHITE/LIGHT CYAN, sleet should be PURPLE. If a day below freezing shows blue rain instead of white snow, the color mapping is wrong.
+
+6. **Temperature Curve Smoothness** — Are the high/low temperature lines smooth without sudden jumps or kinks?
+
+7. **Widget vs App Match** — If both widget and dashboard screenshots are shown, do the precipitation curves show the same pattern? They should be consistent — same days should show precipitation in both views.
+
+8. **Specific Fixes** — For each issue found, state the exact day/location, what's wrong, and suggest a specific parameter change (threshold, sigma, opacity, color value).
+
+IMPORTANT: This is a weather app where users make decisions based on what they see. A precipitation curve showing on a dry day, or missing on a rainy day, is a CRITICAL bug. Prioritize precipitation accuracy above all else.`,
   });
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
