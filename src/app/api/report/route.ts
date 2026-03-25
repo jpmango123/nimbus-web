@@ -263,14 +263,7 @@ export async function GET() {
       ORDER BY created_at DESC
     `;
 
-    // 6. Build and send email
-    const emailHtml = buildEmailHtml(accuracy, comparisons, analyses, screenshots, recentChanges);
-    const subject = `Nimbus Nightly Report — ${now.toLocaleDateString('en-US', {
-      month: 'long', day: 'numeric', year: 'numeric',
-    })}`;
-    const sent = await sendNightlyReport(subject, emailHtml);
-
-    // 6b. Log each analysis module to changelog
+    // 6. Log each analysis module to changelog (email moves to after auto-fix)
     const logEntries: { category: string; summary: string; key: string }[] = [
       { category: 'accuracy', summary: 'Blending & data processing review', key: 'blending' },
       { category: 'visual', summary: `Visual audit: ${screenshots.length} screenshots analyzed`, key: 'visual' },
@@ -326,7 +319,14 @@ export async function GET() {
       }
     }
 
-    // 9. Log the report
+    // 9. Build and send email AFTER auto-fix so it includes what was changed
+    const emailHtml = buildEmailHtml(accuracy, comparisons, analyses, screenshots, recentChanges, fixResults, appliedFixes);
+    const subject = `Nimbus Nightly Report — ${now.toLocaleDateString('en-US', {
+      month: 'long', day: 'numeric', year: 'numeric',
+    })}${appliedFixes.length > 0 ? ` (${appliedFixes.length} fixes)` : ''}`;
+    const sent = await sendNightlyReport(subject, emailHtml);
+
+    // 10. Log the report
     await sql`
       INSERT INTO ai_changelog (category, summary, details, status)
       VALUES ('report', ${`Nightly report — ${accuracy.length} locations, ${screenshots.length} screenshots, ${appliedFixes.length} fixes`},
@@ -1533,7 +1533,9 @@ function buildEmailHtml(
   comparisons: SnapshotRow[],
   analyses: Record<string, string>,
   screenshots: ScreenshotResult[],
-  recentChanges: Record<string, unknown>[]
+  recentChanges: Record<string, unknown>[],
+  fixResults: string[] = [],
+  appliedFixes: CodeFix[] = [],
 ): string {
   // Embed up to 3 screenshots inline in the email
   const inlineImages = screenshots.slice(0, 3).map(s =>
@@ -1599,10 +1601,36 @@ function buildEmailHtml(
     `).join('')}
     ` : ''}
 
+    ${appliedFixes.length > 0 ? `
+    <h2>🤖 Auto-Fix Pipeline</h2>
+    <div class="card">
+      <p style="color: #60a5fa; font-weight: 600; margin-bottom: 12px;">Claude generated ${appliedFixes.length} fix${appliedFixes.length > 1 ? 'es' : ''} based on tonight's analysis:</p>
+      ${appliedFixes.map(fix => `
+        <div style="margin: 10px 0; padding: 10px; background: #0d1521; border-radius: 8px; border-left: 3px solid ${fix.category === 'bug_fix' ? '#ef4444' : fix.category === 'accuracy' ? '#22c55e' : '#3b82f6'};">
+          <div style="font-weight: 600; color: #e2e8f0; font-size: 13px;">[${fix.category}] ${fix.summary}</div>
+          <div style="color: #64748b; font-size: 12px; margin-top: 4px;">${fix.details.slice(0, 150)}${fix.details.length > 150 ? '...' : ''}</div>
+          ${fix.webAppChanges.length > 0 ? '<div style="color: #22c55e; font-size: 11px; margin-top: 4px;">✅ Web app: auto-committed</div>' : ''}
+          ${fix.iosAppChanges.length > 0 ? '<div style="color: #60a5fa; font-size: 11px; margin-top: 4px;">📱 iOS: stored for local apply (9:30 PM)</div>' : ''}
+        </div>
+      `).join('')}
+      ${fixResults.length > 0 ? `
+        <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #1e293b;">
+          <div style="color: #64748b; font-size: 11px; font-weight: 600; margin-bottom: 6px;">APPLY RESULTS:</div>
+          ${fixResults.map(r => `<div style="font-size: 11px; color: #94a3b8; margin: 2px 0;">${r}</div>`).join('')}
+        </div>
+      ` : ''}
+    </div>
+    ` : `
+    <h2>🤖 Auto-Fix Pipeline</h2>
+    <div class="card">
+      <p style="color: #64748b; font-size: 13px;">No fixes generated tonight — everything looks good, or not enough data for confident changes.</p>
+    </div>
+    `}
+
     <div class="footer">
       <p>Nimbus Weather — Automated Nightly Report</p>
       <p>Data: Open-Meteo (HRRR/NBM/GFS blended) + NWS alerts | Visual: Puppeteer + Claude Vision</p>
-      <p>Analyses: Data Accuracy | Visual/Charts | Blending | Meteorological | Calibration | UX</p>
+      <p>14 Analysis Modules | Auto-Fix Pipeline | ${screenshots.length} Screenshots</p>
     </div>
   </div>
 </body>
@@ -1611,11 +1639,18 @@ function buildEmailHtml(
 
 function buildAnalysisSections(analyses: Record<string, string>): string {
   const sections: { key: string; icon: string; title: string }[] = [
-    { key: 'data', icon: '🤖', title: 'Data Accuracy Analysis' },
+    { key: 'data', icon: '📊', title: 'Data Accuracy Analysis' },
     { key: 'visual', icon: '🎨', title: 'Visual & Chart Analysis' },
     { key: 'blending', icon: '⚙️', title: 'Model Blending & Data Processing' },
     { key: 'meteorological', icon: '🌡️', title: 'Meteorological Intelligence' },
     { key: 'calibration', icon: '📐', title: 'Confidence Calibration & Model Skill' },
+    { key: 'hourlyAccuracy', icon: '⏱️', title: 'Hourly Accuracy & Brier Score' },
+    { key: 'forecastStability', icon: '📉', title: 'Forecast Stability (Flip-Flop Detection)' },
+    { key: 'precipTiming', icon: '🕐', title: 'Precipitation Timing Accuracy' },
+    { key: 'windAccuracy', icon: '💨', title: 'Wind Forecast Accuracy' },
+    { key: 'conditionAccuracy', icon: '☁️', title: 'Condition / Icon Accuracy' },
+    { key: 'modelRanking', icon: '🏆', title: 'Dynamic Model Ranking' },
+    { key: 'iosErrors', icon: '🐛', title: 'iOS Error Log Analysis' },
     { key: 'ux', icon: '📱', title: 'UX & Display Intelligence' },
     { key: 'dataVsDisplay', icon: '🔍', title: 'Data vs Display Consistency' },
   ];
