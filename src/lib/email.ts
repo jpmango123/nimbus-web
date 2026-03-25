@@ -16,15 +16,34 @@ export async function sendNightlyReport(subject: string, htmlBody: string): Prom
   const resend = new Resend(apiKey);
 
   try {
-    await resend.emails.send({
-      from: 'Nimbus Weather <onboarding@resend.dev>',  // Use your verified domain later
+    const result = await resend.emails.send({
+      from: 'Nimbus Weather <onboarding@resend.dev>',
       to: toEmail,
       subject,
       html: htmlBody,
     });
+    console.log(`[EMAIL] Sent to ${toEmail}: id=${result.data?.id || 'unknown'}`);
+
+    // Also log to error_logs so we can verify delivery
+    try {
+      const sql = await import('./db').then(m => m.getDb());
+      await sql`INSERT INTO error_logs (device_id, timestamp, level, category, message, context)
+        VALUES ('vercel-email', ${new Date().toISOString()}, 'info', 'email',
+                ${'Email sent: ' + subject}, ${'to=' + toEmail + ' id=' + (result.data?.id || 'none')})`;
+    } catch { /* ignore */ }
+
     return true;
   } catch (err) {
     console.error('[EMAIL] Failed to send:', err);
+
+    // Log the failure to error_logs
+    try {
+      const sql = await import('./db').then(m => m.getDb());
+      await sql`INSERT INTO error_logs (device_id, timestamp, level, category, message, context)
+        VALUES ('vercel-email', ${new Date().toISOString()}, 'error', 'email',
+                ${'Email FAILED: ' + String(err)}, ${'to=' + toEmail + ' subject=' + subject})`;
+    } catch { /* ignore */ }
+
     return false;
   }
 }
