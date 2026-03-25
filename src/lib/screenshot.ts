@@ -102,6 +102,8 @@ export async function captureLocationScreenshots(
     console.log(`[SCREENSHOT] Captured ${results.length} screenshots for ${locationName}`);
   } catch (err) {
     console.error(`[SCREENSHOT] Error capturing ${locationName}:`, err);
+    // Re-throw so the caller can log the error to the DB
+    throw err;
   } finally {
     if (browser) await browser.close();
   }
@@ -117,10 +119,20 @@ export async function captureAllScreenshots(
   locations: { id: number; name: string }[]
 ): Promise<ScreenshotResult[]> {
   const all: ScreenshotResult[] = [];
+  let firstError: Error | null = null;
   // Limit to 3 locations to avoid timeout (each takes ~15-20s)
   for (let i = 0; i < Math.min(locations.length, 3); i++) {
-    const shots = await captureLocationScreenshots(i, locations[i].name);
-    all.push(...shots);
+    try {
+      const shots = await captureLocationScreenshots(i, locations[i].name);
+      all.push(...shots);
+    } catch (err) {
+      if (!firstError) firstError = err instanceof Error ? err : new Error(String(err));
+      console.error(`[SCREENSHOT] Failed for ${locations[i].name}: ${err}`);
+    }
+  }
+  // If we got zero screenshots and had errors, throw so the report can log it
+  if (all.length === 0 && firstError) {
+    throw firstError;
   }
   return all;
 }
