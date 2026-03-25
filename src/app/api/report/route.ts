@@ -300,9 +300,19 @@ export async function GET() {
           .map(([k, v]) => `### ${k}\n${v}`)
           .join('\n\n');
 
-        if (allFindings.length > 200) {
+        // Only generate auto-fixes every 10 days (analysis runs nightly, fixes are less frequent)
+        const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86400000);
+        const isFixDay = dayOfYear % 10 === 0;
+
+        if (allFindings.length > 200 && isFixDay) {
           appliedFixes = await generateFixes(claudeKey, allFindings,
-            'The app uses Open-Meteo blended HRRR/NBM/GFS with consensus-weighted precipitation blending (preserves storm signals when models disagree). HRRR data is validated to reject zero-value failures. Web app is Next.js/TypeScript. iOS app is SwiftUI. Temperature uses weighted average, precipitation uses consensus-scaled approach with 30% floor to prevent storm signal loss.');
+            `The app uses Open-Meteo blended HRRR/NBM/GFS with consensus-weighted precipitation blending (preserves storm signals when models disagree). HRRR data is validated to reject zero-value failures. Web app is Next.js/TypeScript. iOS app is SwiftUI. Temperature uses weighted average, precipitation uses consensus-scaled approach with 30% floor to prevent storm signal loss.
+
+CRITICAL RULES — DO NOT VIOLATE:
+- Do NOT suggest temperature bias corrections, calibration adjustments, or "add X degrees" fixes based on historical accuracy data. These require 30+ days of data to be statistically meaningful.
+- Do NOT suggest scaling back or increasing precipitation probability thresholds based on historical over/under-prediction. Calibration changes need weeks of verification data.
+- Do NOT change model blending weights (HRRR/NBM/GFS percentages) based on short-term performance. Weight changes require 2+ weeks of data.
+- ONLY suggest fixes for: display bugs, rendering issues, data pipeline errors, threshold values that are clearly wrong regardless of history, and code quality improvements.`);
 
           if (appliedFixes.length > 0) {
             // Apply web app changes via GitHub API
@@ -1623,7 +1633,7 @@ function buildEmailHtml(
     ` : `
     <h2>🤖 Auto-Fix Pipeline</h2>
     <div class="card">
-      <p style="color: #64748b; font-size: 13px;">No fixes generated tonight — everything looks good, or not enough data for confident changes.</p>
+      <p style="color: #64748b; font-size: 13px;">No fixes generated tonight. Auto-fix runs every 10 days to ensure changes are based on sufficient data. Analysis runs nightly.</p>
     </div>
     `}
 
