@@ -32,16 +32,25 @@ export async function captureLocationScreenshots(
   try {
     // Disable GPU/WebGL for serverless (reduces memory)
     chromium.setGraphicsMode = false;
+    console.log(`[SCREENSHOT] Chromium args: ${chromium.args.join(' ').slice(0, 200)}`);
 
-    const executablePath = await chromium.executablePath();
-    console.log(`[SCREENSHOT] Chromium path: ${executablePath}`);
+    let executablePath: string;
+    try {
+      executablePath = await chromium.executablePath();
+      console.log(`[SCREENSHOT] Chromium path resolved: ${executablePath}`);
+    } catch (pathErr) {
+      console.error(`[SCREENSHOT] executablePath() failed: ${pathErr}`);
+      throw pathErr;
+    }
 
+    console.log(`[SCREENSHOT] Launching Puppeteer...`);
     browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: { width: 480, height: 900, deviceScaleFactor: 2 },
       executablePath,
       headless: true,
     });
+    console.log(`[SCREENSHOT] Browser launched successfully`);
 
     const page = await browser.newPage();
 

@@ -95,11 +95,19 @@ export async function GET() {
     // 3. Capture screenshots of all charts and widgets
     const locations = await sql`SELECT id, name FROM locations ORDER BY sort_order` as LocationRow[];
     let screenshots: ScreenshotResult[] = [];
+    let screenshotError = '';
     try {
       screenshots = await captureAllScreenshots(locations);
       console.log(`[REPORT] Captured ${screenshots.length} screenshots`);
     } catch (err) {
+      screenshotError = String(err);
       console.error('[REPORT] Screenshot capture failed:', err);
+      // Log the error to DB so we can diagnose
+      try {
+        await sql`INSERT INTO error_logs (device_id, timestamp, level, category, message, context)
+          VALUES ('vercel-report', ${new Date().toISOString()}, 'error', 'screenshot',
+                  ${screenshotError.slice(0, 500)}, ${'captureAllScreenshots failed for ' + locations.length + ' locations'})`;
+      } catch { /* ignore DB error */ }
     }
 
     // 4. Run all Claude analysis modules in parallel where possible
