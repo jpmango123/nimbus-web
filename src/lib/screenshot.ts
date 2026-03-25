@@ -6,9 +6,9 @@
 import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
 
-const APP_URL = process.env.VERCEL_URL
-  ? `https://${process.env.VERCEL_URL}`
-  : process.env.VERCEL_APP_URL || 'https://nimbus-web-xi.vercel.app';
+// Always use the production URL — VERCEL_URL points to the deployment URL
+// which has Deployment Protection (shows login page instead of the app).
+const APP_URL = process.env.VERCEL_APP_URL || 'https://nimbus-web-xi.vercel.app';
 
 export interface ScreenshotResult {
   chartType: string;
