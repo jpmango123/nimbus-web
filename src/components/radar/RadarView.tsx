@@ -122,10 +122,10 @@ export default function RadarView() {
   // so "Local doesn't move" is explained rather than looking broken.
   const localCoverageHint = (): string | null => {
     const { lat, lon, zoom } = view();
-    if (zoom < SINGLE_SITE_MIN_ZOOM) return `Local hi-res appears at zoom ≥ ${SINGLE_SITE_MIN_ZOOM} — zoom in`;
     const site = nearestSite(lat, lon);
-    if (haversineKm(lat, lon, site.lat, site.lon) > 500)
-      return `Local hi-res covers New England (nearest: ${site.name}) — pan home or use National`;
+    const far = haversineKm(lat, lon, site.lat, site.lon) > 500;
+    if (far) return `Local hi-res only covers New England (nearest ${site.name}) — pan home or use Smooth · US`;
+    if (zoom < SINGLE_SITE_MIN_ZOOM) return `Local hi-res appears at zoom ≥ ${SINGLE_SITE_MIN_ZOOM} — zoom in over New England`;
     return null;
   };
 
@@ -482,6 +482,14 @@ export default function RadarView() {
           container, which would neutralize `inset-0`; use explicit h/w-full
           (parent is a definite-height box) so the canvas gets real height. */}
       <div ref={containerRef} className="h-full w-full" />
+      {/* Prominent status banner (coverage hints, "no recent frames", backup…) */}
+      {status && (
+        <div className="pointer-events-none absolute left-1/2 top-3 z-10 -translate-x-1/2">
+          <div className="rounded-full border border-white/10 bg-[#0d1521]/90 px-3 py-1.5 text-xs text-white/80 shadow-lg backdrop-blur-xl">
+            {status}
+          </div>
+        </div>
+      )}
       <RadarControls
         enabled={enabled}
         onToggle={onToggle}
