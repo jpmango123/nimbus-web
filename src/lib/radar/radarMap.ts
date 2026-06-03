@@ -42,6 +42,7 @@ export class RadarMapController {
   private layers = new Map<string, ManagedLayer>(); // layerId -> meta
   private frameLayerIds: string[] = []; // ordered frame stack (oldest..newest)
   private activeFrame = -1;
+  private litFrames = new Set<number>(); // frame indices currently > 0 opacity
 
   constructor(map: MLMap) {
     this.map = map;
@@ -152,14 +153,35 @@ export class RadarMapController {
     this.showFrameIndex(this.activeFrame);
   }
 
+  /** Hard-select a single frame (used for scrubbing / paused display). */
   showFrameIndex(index: number): void {
-    this.activeFrame = index;
-    this.frameLayerIds.forEach((id, i) => this.applyOpacity(id, i === index ? 1 : 0));
+    this.showFrameBlend([[index, 1]]);
+  }
+
+  /** Continuous crossfade primitive: set the given [frameIndex, factor] pairs
+   *  (factor 0..1 of the layer's full opacity) and zero every other frame.
+   *  Only layers whose opacity actually changes are touched, so this is cheap
+   *  to call every requestAnimationFrame tick. */
+  showFrameBlend(entries: Array<[number, number]>): void {
+    const next = new Set<number>();
+    for (const [idx] of entries) next.add(idx);
+    // turn off frames that were lit last tick but aren't now
+    for (const idx of this.litFrames) {
+      if (!next.has(idx)) this.applyOpacity(this.frameLayerIds[idx], 0);
+    }
+    for (const [idx, factor] of entries) {
+      const id = this.frameLayerIds[idx];
+      if (id) this.applyOpacity(id, factor);
+    }
+    this.litFrames = next;
+    // track the dominant frame for opacity refreshes
+    this.activeFrame = entries.reduce((a, b) => (b[1] >= (a?.[1] ?? -1) ? b : a), entries[0])?.[0] ?? -1;
   }
 
   clearFrameStack(): void {
     for (const id of this.frameLayerIds) this.removeLayer(id);
     this.frameLayerIds = [];
+    this.litFrames.clear();
     this.activeFrame = -1;
   }
 
@@ -181,8 +203,10 @@ export class RadarMapController {
 
   private refreshAll(): void {
     for (const id of this.layers.keys()) {
-      const isFrame = this.frameLayerIds.includes(id);
-      const factor = isFrame ? (id === this.frameLayerIds[this.activeFrame] ? 1 : 0) : 1;
+      const frameIdx = this.frameLayerIds.indexOf(id);
+      // Non-frame layers -> full. Frame layers -> lit ones full (a playing
+      // crossfade re-sets exact factors on the next rAF tick).
+      const factor = frameIdx < 0 ? 1 : this.litFrames.has(frameIdx) ? 1 : 0;
       this.applyOpacity(id, factor);
     }
   }

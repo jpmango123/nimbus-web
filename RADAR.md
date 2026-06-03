@@ -83,18 +83,39 @@ National at zoom < 8, but the user can override.
 - **National (smooth):** RainViewer `radar.past[]` (2 h @ 10-min steps); the IEM
   composite is removed in this mode (RainViewer is itself a national mosaic).
 
-**Flicker-free approach (chosen):** a **pre-added per-frame layer stack toggled
-by `raster-opacity`**. Each frame is its own raster source+layer added at
-opacity 0 but `visibility:'visible'`, so MapLibre eagerly loads its tiles for the
-current viewport (preload). Playback just flips `raster-opacity` between frames
-— no `source.setTiles()` reload, so there is **zero per-frame network flicker**.
-(`setTiles()` on a single source re-requests tiles and blinks each step.)
-`raster-fade-duration` is 0 to keep frame switches crisp.
+### Smoothness: continuous constant-intensity crossfade (no stop-and-go)
 
-Playback: preload on `map.once('idle')`, then ~500 ms/frame, with a ~1 s dwell
-on the newest frame before looping. A timeline scrubber lets you scrub frames
-(auto-pauses), and the timestamp label shows the displayed frame in
-**device-local** time (converted from UTC).
+The goal is one flowing loop, not a slideshow. Three levers (the consensus
+technique for web-map radar — see the MapLibre "animate a series of images"
+example, the RainViewer API example, and `weather-radar-card`):
+
+1. **Pre-added per-frame layer stack.** Each frame is its own raster
+   source+layer, added at `raster-opacity` 0 but `visibility:'visible'` so
+   MapLibre eagerly loads its tiles for the viewport. We never call
+   `source.setTiles()` during playback (that re-requests tiles and blinks each
+   step). `raster-fade-duration` is 0 so we own the blending.
+2. **Full preload before playing.** `buildAndPlay` awaits `waitTilesLoaded()`
+   (`map.areTilesLoaded()` / `idle`) before starting, so the loop never stalls
+   on a network fetch mid-flight — the other big cause of stutter.
+3. **`requestAnimationFrame`, time-based.** A float playhead `pos ∈ [0, n)`
+   advances by `dt / CROSSFADE_STEP_MS` each tick (frame-rate-independent, no
+   `setInterval` drift). `floor(pos)` is the frame; the fraction is the blend.
+
+**Constant-intensity crossfade:** the older frame stays fully opaque underneath
+while the newer frame fades in on top (`showFrameBlend([[i,1],[i+1,f]])`), so
+apparent brightness never dips mid-blend. At the loop point the newest frame
+fades out to reveal the oldest beneath it. React state (scrubber/label) is
+updated only on whole-frame changes, not every tick. There is a ~1 s dwell on
+the newest frame before the wrap. The scrubber auto-pauses and seeks; the
+timestamp label is the displayed frame in **device-local** time.
+
+> **Honest limit:** this is a smooth *dissolve*, not true echo *motion*
+> interpolation. Making rain physically glide between scans (Windy/MyRadar
+> style) needs per-pixel optical-flow morphing computed on a **server** — not
+> possible from raster tiles with no backend. Crossfade + preload + rAF is the
+> smoothest achievable on this stack. If you ever add even a tiny serverless
+> function, optical-flow frame interpolation (e.g. RainViewer's interpolated
+> frames, or a Farneback/TVL1 flow warp) is the next step up.
 
 ## Reliability fallback (health check)
 

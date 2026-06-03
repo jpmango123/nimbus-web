@@ -67,7 +67,8 @@ export const SINGLE_SITE_MAX_ZOOM = 12; // practical IEM N0B limit
 export const SINGLE_SITE_MIN_ZOOM = 8; // only layer single-site at zoom >= 8
 export const RAINVIEWER_MAX_ZOOM = 7; // RainViewer hard cap (Jan 2026)
 
-export const FRAME_DURATION_MS = 500; // default playback speed
+export const FRAME_DURATION_MS = 500; // discrete fallback step (unused by the web crossfade engine)
+export const CROSSFADE_STEP_MS = 850; // wall-time to advance ONE frame during the continuous crossfade
 export const LAST_FRAME_PAUSE_MS = 1000; // dwell on the newest frame before looping
 
 export const SINGLE_SITE_LOOKBACK_MIN = 90; // request ~last 60–90 min of scans

@@ -19,7 +19,7 @@ import { useEffect, useRef, useState } from 'react';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Map as MLMap, StyleSpecification } from 'maplibre-gl';
 import {
-  FRAME_DURATION_MS,
+  CROSSFADE_STEP_MS,
   HEALTH_FAIL_THRESHOLD,
   HEALTH_FAIL_WINDOW_MS,
   HEALTH_RECOVERY_COOLDOWN_MS,
@@ -73,11 +73,14 @@ export default function RadarView() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);
   const ctrlRef = useRef<RadarMapController | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // animation refs (kept out of state to avoid stale-closure churn in the loop)
+  // continuous-crossfade animation engine (refs avoid stale-closure churn)
+  const rafRef = useRef<number | null>(null);
+  const posRef = useRef(0); // float playhead in [0, n): integer = frame, frac = crossfade
+  const lastTsRef = useRef(0); // performance.now() of previous tick
+  const dwellUntilRef = useRef(0); // hold newest frame until this time
+  const displayIdxRef = useRef(-1); // last frame index pushed to the label/scrubber
   const framesRef = useRef<RadarFrame[]>([]);
-  const frameIdxRef = useRef(-1);
   const playingRef = useRef(false);
   const loopModeRef = useRef<LoopMode>('local');
   const siteRef = useRef<NexradSite>(defaultSite());
@@ -115,9 +118,9 @@ export default function RadarView() {
   const activeComposite = (): RadarSource =>
     usingBackupRef.current ? mrmsSource() : compositeSource();
 
-  const stopTimer = () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = null;
+  const stopAnim = () => {
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
   };
 
   const updateLabel = (f: RadarFrame | undefined) => {
@@ -136,7 +139,7 @@ export default function RadarView() {
   const enterLive = () => {
     const c = ctrlRef.current;
     if (!c) return;
-    stopTimer();
+    stopAnim();
     c.clearFrameStack();
     stackKeyRef.current = null;
     c.setComposite(activeComposite());
@@ -160,23 +163,90 @@ export default function RadarView() {
     return frames;
   };
 
-  const scheduleNext = (delay: number) => {
-    stopTimer();
-    timerRef.current = setTimeout(advance, delay);
+  // Render a continuous playhead position as a CONSTANT-INTENSITY crossfade:
+  // the older frame stays fully opaque underneath while the newer frame fades
+  // in on top (so apparent brightness never dips mid-blend). At the loop point
+  // the newest frame fades out to reveal the oldest beneath it.
+  const renderPos = (pos: number) => {
+    const c = ctrlRef.current;
+    const n = framesRef.current.length;
+    if (!c || n === 0) return;
+    if (n === 1) {
+      c.showFrameBlend([[0, 1]]);
+      return;
+    }
+    let i = Math.floor(pos);
+    const f = pos - i;
+    if (i >= n) i = 0;
+    if (i < n - 1) {
+      c.showFrameBlend([
+        [i, 1],
+        [i + 1, f],
+      ]);
+    } else {
+      // wrap segment (newest -> oldest)
+      c.showFrameBlend([
+        [0, 1],
+        [n - 1, 1 - f],
+      ]);
+    }
+    // Throttle React updates to whole-frame changes (not every rAF tick).
+    const disp = i < n - 1 ? (f < 0.5 ? i : i + 1) : f < 0.5 ? n - 1 : 0;
+    if (disp !== displayIdxRef.current) {
+      displayIdxRef.current = disp;
+      setFrameIndex(disp);
+      updateLabel(framesRef.current[disp]);
+    }
   };
 
-  const advance = () => {
+  const loop = (now: number) => {
     if (!playingRef.current) return;
     const n = framesRef.current.length;
-    if (n === 0) return;
-    let next = frameIdxRef.current + 1;
-    if (next >= n) next = 0;
-    frameIdxRef.current = next;
-    setFrameIndex(next);
-    ctrlRef.current?.showFrameIndex(next);
-    updateLabel(framesRef.current[next]);
-    scheduleNext(next === n - 1 ? LAST_FRAME_PAUSE_MS : FRAME_DURATION_MS);
+    if (n < 2) {
+      rafRef.current = requestAnimationFrame(loop);
+      return;
+    }
+    const dt = now - lastTsRef.current;
+    lastTsRef.current = now;
+    if (now >= dwellUntilRef.current) {
+      const prev = posRef.current;
+      let next = prev + dt / CROSSFADE_STEP_MS;
+      if (prev < n - 1 && next >= n - 1) {
+        // reached the newest frame: snap and dwell before the wrap dissolve
+        next = n - 1;
+        dwellUntilRef.current = now + LAST_FRAME_PAUSE_MS;
+      } else if (next >= n) {
+        next -= n; // past the wrap dissolve -> back to the oldest frame
+      }
+      posRef.current = next;
+    }
+    renderPos(posRef.current);
+    rafRef.current = requestAnimationFrame(loop);
   };
+
+  const startLoop = (fromNewest: boolean) => {
+    stopAnim();
+    const n = framesRef.current.length;
+    if (fromNewest && n > 0) {
+      posRef.current = n - 1;
+      dwellUntilRef.current = performance.now() + LAST_FRAME_PAUSE_MS; // hold newest first
+    }
+    lastTsRef.current = performance.now();
+    rafRef.current = requestAnimationFrame(loop);
+  };
+
+  // Wait until the freshly-added frame tiles are loaded (no mid-loop stalls).
+  const waitTilesLoaded = () =>
+    new Promise<void>((resolve) => {
+      const m = mapRef.current;
+      if (!m || m.areTilesLoaded()) return resolve();
+      const done = () => {
+        m.off('idle', done);
+        resolve();
+      };
+      m.on('idle', done);
+      setTimeout(done, 5000); // safety net
+    });
 
   const buildAndPlay = async () => {
     const c = ctrlRef.current;
@@ -204,15 +274,15 @@ export default function RadarView() {
 
     c.buildFrameStack(animated, frames);
     stackKeyRef.current = `${mode}:${mode === 'local' ? s.id : 'national'}`;
-    frameIdxRef.current = frames.length - 1;
+    displayIdxRef.current = frames.length - 1;
     setFrameIndex(frames.length - 1);
     updateLabel(frames[frames.length - 1]);
 
-    // Preload: start once tiles for the viewport have loaded, to avoid flicker.
-    const start = () => {
-      if (playingRef.current) scheduleNext(LAST_FRAME_PAUSE_MS);
-    };
-    m.once('idle', start);
+    // Preload ALL frame tiles before playing so the loop never stalls.
+    setStatus('preloading…');
+    await waitTilesLoaded();
+    setStatus(null);
+    if (playingRef.current) startLoop(true);
   };
 
   const play = () => {
@@ -222,7 +292,7 @@ export default function RadarView() {
     const mode = loopModeRef.current;
     const key = `${mode}:${mode === 'local' ? siteRef.current.id : 'national'}`;
     if (stackKeyRef.current === key && (ctrlRef.current?.frameCount() ?? 0) > 0) {
-      scheduleNext(FRAME_DURATION_MS); // resume existing stack
+      startLoop(false); // resume existing stack from the current playhead
     } else {
       void buildAndPlay();
     }
@@ -231,7 +301,7 @@ export default function RadarView() {
   const pause = () => {
     playingRef.current = false;
     setPlaying(false);
-    stopTimer();
+    stopAnim();
   };
 
   // -- health check ----------------------------------------------------------
@@ -284,7 +354,8 @@ export default function RadarView() {
   const onScrub = (i: number) => {
     pause();
     if ((ctrlRef.current?.frameCount() ?? 0) > 0) {
-      frameIdxRef.current = i;
+      posRef.current = i;
+      displayIdxRef.current = i;
       setFrameIndex(i);
       ctrlRef.current?.showFrameIndex(i);
       updateLabel(framesRef.current[i]);
@@ -369,7 +440,7 @@ export default function RadarView() {
 
     return () => {
       cancelled = true;
-      stopTimer();
+      stopAnim();
       ctrlRef.current?.destroy();
       ctrlRef.current = null;
       map?.remove();
