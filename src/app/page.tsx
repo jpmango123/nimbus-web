@@ -106,6 +106,12 @@ export default function Home() {
               °{unit}
             </button>
             <Link
+              href="/radar"
+              className="px-2 py-1 rounded text-xs text-white/50 hover:text-white/80 hover:bg-white/5 transition-all"
+            >
+              Radar
+            </Link>
+            <Link
               href="/widget"
               className="px-2 py-1 rounded text-xs text-white/50 hover:text-white/80 hover:bg-white/5 transition-all"
             >
