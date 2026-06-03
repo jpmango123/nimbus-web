@@ -29,7 +29,9 @@ import {
   compositeSource,
   defaultSite,
   framesForLoop,
+  haversineKm,
   mrmsSource,
+  nearestSite,
   rainviewerSource,
   selectSite,
   singleSiteSource,
@@ -115,6 +117,18 @@ export default function RadarView() {
     return { lat: c?.lat ?? siteRef.current.lat, lon: c?.lng ?? siteRef.current.lon, zoom: m?.getZoom() ?? 7 };
   };
 
+  // Local (single-site) radar only covers the New England catalog and only
+  // renders at zoom >= 8. Returns a hint when the current view can't show it,
+  // so "Local doesn't move" is explained rather than looking broken.
+  const localCoverageHint = (): string | null => {
+    const { lat, lon, zoom } = view();
+    if (zoom < SINGLE_SITE_MIN_ZOOM) return `Local hi-res appears at zoom ≥ ${SINGLE_SITE_MIN_ZOOM} — zoom in`;
+    const site = nearestSite(lat, lon);
+    if (haversineKm(lat, lon, site.lat, site.lon) > 500)
+      return `Local hi-res covers New England (nearest: ${site.name}) — pan home or use National`;
+    return null;
+  };
+
   const activeComposite = (): RadarSource =>
     usingBackupRef.current ? mrmsSource() : compositeSource();
 
@@ -149,6 +163,7 @@ export default function RadarView() {
         ? singleSiteSource(siteRef.current)
         : null
     );
+    if (loopModeRef.current === 'local') setStatus(localCoverageHint());
   };
 
   const getFrames = async (mode: LoopMode, s: NexradSite): Promise<RadarFrame[]> => {
@@ -236,17 +251,20 @@ export default function RadarView() {
     rafRef.current = requestAnimationFrame(loop);
   };
 
-  // Wait until the freshly-added frame tiles are loaded (no mid-loop stalls).
+  // Wait until ALL freshly-added frame tiles are loaded before playing, so the
+  // loop never stalls mid-flight (a major cause of the "stop-and-go" feel on
+  // mobile). Polls areTilesLoaded rather than a single 'idle' event.
   const waitTilesLoaded = () =>
     new Promise<void>((resolve) => {
       const m = mapRef.current;
-      if (!m || m.areTilesLoaded()) return resolve();
-      const done = () => {
-        m.off('idle', done);
-        resolve();
+      if (!m) return resolve();
+      const started = Date.now();
+      const tick = () => {
+        if (!playingRef.current) return resolve(); // user paused while preloading
+        if (m.areTilesLoaded() || Date.now() - started > 12000) return resolve();
+        setTimeout(tick, 200);
       };
-      m.on('idle', done);
-      setTimeout(done, 5000); // safety net
+      setTimeout(tick, 300); // let tile requests start before first check
     });
 
   const buildAndPlay = async () => {
@@ -282,7 +300,7 @@ export default function RadarView() {
     // Preload ALL frame tiles before playing so the loop never stalls.
     setStatus('preloading…');
     await waitTilesLoaded();
-    setStatus(null);
+    setStatus(mode === 'local' ? localCoverageHint() : null);
     if (playingRef.current) startLoop(true);
   };
 
