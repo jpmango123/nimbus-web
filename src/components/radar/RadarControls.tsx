@@ -109,23 +109,22 @@ export default function RadarControls(p: Props) {
           className="w-full accent-blue-400 disabled:opacity-40"
         />
 
-        {/* Playback speed */}
+        {/* Playback speed — log slider (0.25× … 4×, 1× centered) */}
         <div className="flex items-center gap-2 text-xs text-white/60">
           <span className="w-14">Speed</span>
-          <div className="flex flex-1 rounded-full border border-white/10 overflow-hidden">
-            {[0.25, 0.5, 1, 2, 4].map((s) => (
-              <button
-                key={s}
-                onClick={() => p.onSpeed(s)}
-                disabled={!p.enabled}
-                className={`flex-1 px-2 py-1 transition-all disabled:opacity-40 ${
-                  p.speed === s ? 'bg-blue-500/25 text-blue-200' : 'text-white/50 hover:bg-white/5'
-                }`}
-              >
-                {s}×
-              </button>
-            ))}
-          </div>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={Math.log(p.speed / 0.25) / Math.log(16)}
+            onChange={(e) => p.onSpeed(0.25 * Math.pow(16, Number(e.target.value)))}
+            disabled={!p.enabled}
+            className="flex-1 accent-blue-400 disabled:opacity-40"
+          />
+          <span className="w-10 tabular-nums text-right">
+            {p.speed.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}×
+          </span>
         </div>
 
         {/* Opacity slider */}
