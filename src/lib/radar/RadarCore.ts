@@ -29,6 +29,16 @@
 export const IEM_COMPOSITE_TILE =
   'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png';
 
+/** Animated composite frames via IEM relative-time layer names: the last ~50
+ *  min in 5-min steps (`nexrad-n0q-900913-m50m` … `-m05m`, then the latest with
+ *  no suffix). This is the primary smooth loop — CONUS-wide, all zooms, and it
+ *  needs NO scan listing or clock sync (far simpler/robuster than timestamps). */
+export const IEM_COMPOSITE_FRAME_TILE =
+  'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913-m{OFF}m/{z}/{x}/{y}.png';
+
+/** Minutes-ago offsets for the composite loop, oldest -> newest (0 = latest). */
+export const COMPOSITE_FRAME_MINUTES = [50, 45, 40, 35, 30, 25, 20, 15, 10, 5, 0];
+
 /** Single-site latest frame (the trailing `-0` is "newest"). Uses /cache/. */
 export const IEM_SINGLE_LATEST_TILE =
   'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::{SITE}-N0B-0/{z}/{x}/{y}.png';
@@ -93,7 +103,10 @@ export type RadarSourceKind =
   | 'rainviewer'
   | 'mrms-wms';
 
-export type LoopMode = 'local' | 'national';
+// 'composite' = animated 5-min IEM N0Q composite (CONUS-wide, all zooms; the
+// default smooth loop). 'local' = animated single-site N0B (New England hi-res).
+// (RainViewer 'national' was retired — coarser 10-min frames, capped at zoom 7.)
+export type LoopMode = 'local' | 'composite';
 
 /** A renderable radar layer description. Platform adapters turn this into a
  *  MapLibre raster source + raster layer. Contains NO map SDK types. */
@@ -119,8 +132,9 @@ export interface NexradSite {
  *  tile URL. `timestamp` is epoch ms in UTC. */
 export interface RadarFrame {
   timestamp: number;
-  single?: { site: string; stamp: string }; // stamp = YYYYmmddHHMM (UTC)
-  national?: { host: string; path: string };
+  single?: { site: string; stamp: string }; // stamp = YYYYmmddHHMM (UTC) — local mode
+  composite?: { minutesAgo: number }; // composite mode (relative-time frame)
+  national?: { host: string; path: string }; // retired (RainViewer); kept for reference
 }
 
 // MARK: - NEXRAD single-site catalog (New England). lat/lon are radar locations.
@@ -258,8 +272,6 @@ export function sourcesForViewport(
 
 // MARK: - Frame model
 
-const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
-
 /** Format epoch ms as the UTC YYYYmmddHHMM stamp IEM frame tiles expect. */
 export function utcStamp(epochMs: number): string {
   const d = new Date(epochMs);
@@ -285,12 +297,20 @@ export async function framesForLoop(
   fetchImpl: typeof fetch = fetch
 ): Promise<RadarFrame[]> {
   try {
-    return mode === 'local'
-      ? await localFrames(site, fetchImpl)
-      : await nationalFrames(fetchImpl);
+    return mode === 'local' ? await localFrames(site, fetchImpl) : compositeFrames();
   } catch {
     return [];
   }
+}
+
+/** Composite loop frames — synthesized locally from relative-time offsets
+ *  (no network listing). Oldest -> newest. */
+export function compositeFrames(): RadarFrame[] {
+  const now = Date.now();
+  return COMPOSITE_FRAME_MINUTES.map((m) => ({
+    timestamp: now - m * 60_000,
+    composite: { minutesAgo: m },
+  }));
 }
 
 async function localFrames(site: NexradSite, fetchImpl: typeof fetch): Promise<RadarFrame[]> {
@@ -327,28 +347,6 @@ async function localFrames(site: NexradSite, fetchImpl: typeof fetch): Promise<R
   return frames;
 }
 
-async function nationalFrames(fetchImpl: typeof fetch): Promise<RadarFrame[]> {
-  const res = await fetchImpl(RAINVIEWER_INDEX);
-  if (!res.ok) return [];
-  const data = (await res.json()) as {
-    host?: string;
-    radar?: { past?: Array<{ time?: number; path?: string }> };
-  };
-  const host = data?.host;
-  const past = data?.radar?.past;
-  if (!host || !Array.isArray(past)) return [];
-
-  const now = Date.now();
-  return past
-    .filter((p) => typeof p?.path === 'string' && typeof p?.time === 'number')
-    .map((p) => ({
-      timestamp: (p.time as number) * 1000, // RainViewer "time" is epoch SECONDS
-      national: { host, path: p.path as string },
-    }))
-    .filter((f) => now - f.timestamp <= TWO_HOURS_MS + 60_000)
-    .sort((a, b) => a.timestamp - b.timestamp);
-}
-
 /** Resolve a source + frame to a concrete {z}/{x}/{y} tile template.
  *  Pass frame = null to get the live "latest" template for that source. */
 export function tileURL(source: RadarSource, frame: RadarFrame | null): string {
@@ -370,8 +368,13 @@ export function tileURL(source: RadarSource, frame: RadarFrame | null): string {
       }
       return source.urlTemplate;
     case 'iem-composite':
+      if (frame?.composite && frame.composite.minutesAgo > 0) {
+        const off = String(frame.composite.minutesAgo).padStart(2, '0');
+        return IEM_COMPOSITE_FRAME_TILE.replace('{OFF}', off);
+      }
+      return source.urlTemplate; // latest (no -mNNm suffix)
     case 'mrms-wms':
     default:
-      return source.urlTemplate; // composite & WMS use their rolling-latest template
+      return source.urlTemplate; // WMS uses its rolling-latest template
   }
 }

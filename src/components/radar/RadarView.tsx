@@ -32,7 +32,6 @@ import {
   haversineKm,
   mrmsSource,
   nearestSite,
-  rainviewerSource,
   selectSite,
   singleSiteSource,
   type LoopMode,
@@ -84,10 +83,9 @@ export default function RadarView() {
   const displayIdxRef = useRef(-1); // last frame index pushed to the label/scrubber
   const framesRef = useRef<RadarFrame[]>([]);
   const playingRef = useRef(false);
-  const loopModeRef = useRef<LoopMode>('local');
+  const loopModeRef = useRef<LoopMode>('composite');
   const siteRef = useRef<NexradSite>(defaultSite());
   const enabledRef = useRef(true);
-  const modeManualRef = useRef(false);
   const stackKeyRef = useRef<string | null>(null);
   const listCacheRef = useRef<{ key: string; time: number; frames: RadarFrame[] } | null>(null);
 
@@ -100,8 +98,8 @@ export default function RadarView() {
   const [enabled, setEnabled] = useState(true);
   const [opacity, setOpacity] = useState(1);
   const [playing, setPlaying] = useState(false);
-  const [loopMode, setLoopMode] = useState<LoopMode>('local');
-  const [suggestedMode, setSuggestedMode] = useState<LoopMode>('local');
+  const [loopMode, setLoopMode] = useState<LoopMode>('composite');
+  const [suggestedMode, setSuggestedMode] = useState<LoopMode>('composite');
   const [site, setSite] = useState<NexradSite>(defaultSite());
   const [frameCount, setFrameCount] = useState(0);
   const [frameIndex, setFrameIndex] = useState(-1);
@@ -167,9 +165,11 @@ export default function RadarView() {
   };
 
   const getFrames = async (mode: LoopMode, s: NexradSite): Promise<RadarFrame[]> => {
-    const key = mode === 'local' ? `local:${s.id}` : 'national';
+    // Composite frames are synthesized locally (no network) — always fresh.
+    if (mode === 'composite') return framesForLoop('composite', s);
+    // Local mode hits the IEM scan listing — cache it (IEM courtesy: <=1/60s).
+    const key = `local:${s.id}`;
     const cache = listCacheRef.current;
-    // IEM courtesy: reuse a recent listing rather than re-polling within 60s.
     if (cache && cache.key === key && Date.now() - cache.time < LIST_MIN_POLL_INTERVAL_MS) {
       return cache.frames;
     }
@@ -286,13 +286,13 @@ export default function RadarView() {
     framesRef.current = frames;
     setFrameCount(frames.length);
 
-    const animated: RadarSource = mode === 'local' ? singleSiteSource(s) : rainviewerSource();
+    const animated: RadarSource = mode === 'local' ? singleSiteSource(s) : compositeSource();
     c.setSingleSite(null); // avoid duplicate with the animated frames
-    if (mode === 'national') c.removeComposite(); // RainViewer is itself a national mosaic
-    else c.setComposite(activeComposite()); // local: keep composite underneath (fills gaps)
+    if (mode === 'composite') c.removeComposite(); // the frame stack IS the composite
+    else c.setComposite(activeComposite()); // local: static composite base under single-site
 
     c.buildFrameStack(animated, frames);
-    stackKeyRef.current = `${mode}:${mode === 'local' ? s.id : 'national'}`;
+    stackKeyRef.current = `${mode}:${mode === 'local' ? s.id : 'composite'}`;
     displayIdxRef.current = frames.length - 1;
     setFrameIndex(frames.length - 1);
     updateLabel(frames[frames.length - 1]);
@@ -309,7 +309,7 @@ export default function RadarView() {
     playingRef.current = true;
     setPlaying(true);
     const mode = loopModeRef.current;
-    const key = `${mode}:${mode === 'local' ? siteRef.current.id : 'national'}`;
+    const key = `${mode}:${mode === 'local' ? siteRef.current.id : 'composite'}`;
     if (stackKeyRef.current === key && (ctrlRef.current?.frameCount() ?? 0) > 0) {
       startLoop(false); // resume existing stack from the current playhead
     } else {
@@ -381,7 +381,6 @@ export default function RadarView() {
     }
   };
   const onLoopMode = (m: LoopMode) => {
-    modeManualRef.current = true;
     loopModeRef.current = m;
     setLoopMode(m);
     stackKeyRef.current = null;
@@ -434,10 +433,14 @@ export default function RadarView() {
 
       map.on('moveend', () => {
         const { lat, lon, zoom } = view();
-        const suggested: LoopMode = zoom >= SINGLE_SITE_MIN_ZOOM ? 'local' : 'national';
-        setSuggestedMode(suggested);
+        // Suggest Local only when zoomed in AND near the New England sites;
+        // otherwise the smooth composite is the right choice. (Chip only — we
+        // don't auto-switch, to avoid surprising the user.)
+        const site = nearestSite(lat, lon);
+        const nearHome = haversineKm(lat, lon, site.lat, site.lon) <= 500;
+        setSuggestedMode(zoom >= SINGLE_SITE_MIN_ZOOM && nearHome ? 'local' : 'composite');
 
-        // nearest-site selection with hysteresis
+        // nearest-site selection with hysteresis (drives Local mode)
         const newSite = selectSite(lat, lon, siteRef.current);
         const siteChanged = newSite.id !== siteRef.current.id;
         if (siteChanged) {
@@ -445,16 +448,9 @@ export default function RadarView() {
           setSite(newSite);
         }
 
-        // auto loop-mode suggestion (unless the user picked one)
-        const modeChanged = !modeManualRef.current && suggested !== loopModeRef.current;
-        if (modeChanged) {
-          loopModeRef.current = suggested;
-          setLoopMode(suggested);
-          stackKeyRef.current = null;
-        }
-
         if (playingRef.current) {
-          if (siteChanged || modeChanged) void buildAndPlay();
+          // composite frames are global; only Local needs a rebuild on site change
+          if (loopModeRef.current === 'local' && siteChanged) void buildAndPlay();
         } else {
           enterLive(); // refresh single-site visibility for the new zoom/site
         }
@@ -497,11 +493,7 @@ export default function RadarView() {
         siteName={site.name}
         usingBackup={usingBackup}
         status={status}
-        attribution={
-          loopMode === 'local' || !usingBackup
-            ? 'Iowa Environmental Mesonet / NWS'
-            : 'NOAA / NWS MRMS'
-        }
+        attribution={usingBackup ? 'NOAA / NWS MRMS' : 'Iowa Environmental Mesonet / NWS'}
         onRefresh={refresh}
       />
     </div>

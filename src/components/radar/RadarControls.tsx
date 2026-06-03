@@ -62,16 +62,16 @@ export default function RadarControls(p: Props) {
 
           {/* Loop mode switch */}
           <div className="flex rounded-full border border-white/10 overflow-hidden text-xs">
-            {(['local', 'national'] as LoopMode[]).map((m) => (
+            {(['composite', 'local'] as LoopMode[]).map((m) => (
               <button
                 key={m}
                 onClick={() => p.onLoopMode(m)}
                 className={`px-3 py-1.5 transition-all ${
                   p.loopMode === m ? 'bg-white/15 text-white' : 'text-white/50 hover:bg-white/5'
                 }`}
-                title={m === p.suggestedMode ? 'Suggested for this zoom' : undefined}
+                title={m === p.suggestedMode ? 'Suggested for this view' : undefined}
               >
-                {m === 'local' ? 'Local (hi-res)' : 'National (smooth)'}
+                {m === 'composite' ? 'Smooth · US' : 'Local hi-res'}
                 {m === p.suggestedMode && m !== p.loopMode ? ' ·' : ''}
               </button>
             ))}
@@ -137,7 +137,7 @@ export default function RadarControls(p: Props) {
         {/* Footer: site, status, attribution */}
         <div className="flex items-center justify-between text-[10px] text-white/40">
           <span>
-            {p.loopMode === 'local' ? `Site: ${p.siteName}` : 'National mosaic'}
+            {p.loopMode === 'local' ? `Site: ${p.siteName}` : 'US composite · 5-min'}
             {p.usingBackup && <span className="ml-2 text-amber-400">⚠ using backup radar</span>}
             {p.status && <span className="ml-2 text-white/60">{p.status}</span>}
           </span>

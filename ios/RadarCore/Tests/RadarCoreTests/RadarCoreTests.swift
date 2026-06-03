@@ -103,27 +103,33 @@ final class RadarCoreTests: XCTestCase {
         XCTAssertNotNil(frames[1].single?.stamp)
     }
 
-    func testNationalFramesParsing() async {
-        let nowSec = Int(Date().timeIntervalSince1970)
-        let payload = """
-        {"host":"https://tc.rainviewer.com","radar":{"past":[
-          {"time":\(nowSec - 600),"path":"/v2/radar/a"},
-          {"time":\(nowSec - 300),"path":"/v2/radar/b"}
-        ]}}
-        """
-        let fetch: RadarDataFetcher = { _ in Data(payload.utf8) }
-        let frames = await framesForLoop(.national, defaultSite(), fetch: fetch)
-        XCTAssertEqual(frames.count, 2)
-        XCTAssertEqual(frames[0].national?.host, "https://tc.rainviewer.com")
-        XCTAssertLessThan(frames[0].timestamp, frames[1].timestamp)
+    func testCompositeFrames() async {
+        // Composite frames are synthesized locally (no network) — oldest -> newest,
+        // 11 frames over the last 50 min in 5-min steps.
+        let frames = await framesForLoop(.composite, defaultSite(), fetch: { _ in Data() })
+        XCTAssertEqual(frames.count, COMPOSITE_FRAME_MINUTES.count)
+        XCTAssertEqual(frames.first?.composite?.minutesAgo, 50)
+        XCTAssertEqual(frames.last?.composite?.minutesAgo, 0)
+        XCTAssertLessThan(frames.first!.timestamp, frames.last!.timestamp)
+    }
+
+    func testTileURLCompositeFrame() {
+        let src = compositeSource()
+        // latest (minutesAgo 0) -> base template, no -mNNm suffix
+        let latest = tileURL(src, RadarFrame(timestamp: 0, composite: .init(minutesAgo: 0)))
+        XCTAssertEqual(latest, IEM_COMPOSITE_TILE)
+        // 5 min ago -> zero-padded -m05m
+        let f5 = tileURL(src, RadarFrame(timestamp: 0, composite: .init(minutesAgo: 5)))
+        XCTAssertTrue(f5.contains("nexrad-n0q-900913-m05m"))
+        // 50 min ago -> -m50m
+        let f50 = tileURL(src, RadarFrame(timestamp: 0, composite: .init(minutesAgo: 50)))
+        XCTAssertTrue(f50.contains("nexrad-n0q-900913-m50m"))
     }
 
     func testFramesGracefulOnGarbage() async {
         let fetch: RadarDataFetcher = { _ in Data("not json".utf8) }
         let local = await framesForLoop(.local, defaultSite(), fetch: fetch)
-        let national = await framesForLoop(.national, defaultSite(), fetch: fetch)
         XCTAssertEqual(local, [])
-        XCTAssertEqual(national, [])
     }
 
     func testFramesGracefulOnThrow() async {

@@ -76,14 +76,25 @@ ENX, OKX.
 
 ## Animation
 
-Two user-toggleable loop modes; the UI auto-*suggests* Local at zoom ≥ 8 and
-National at zoom < 8, but the user can override.
+Two user-toggleable loop modes (the UI *suggests* Local when zoomed in near a
+New England site, otherwise Composite — but never auto-switches):
 
-- **Local (hi-res):** lists recent scans via `radar.py?operation=list`
-  (last ~90 min), builds per-frame `…-N0B-{stamp}` tiles, composite stays
-  underneath.
-- **National (smooth):** RainViewer `radar.past[]` (2 h @ 10-min steps); the IEM
-  composite is removed in this mode (RainViewer is itself a national mosaic).
+- **Composite (smooth · US)** — the default, the primary smooth loop. Uses IEM's
+  built-in relative-time composite frames `nexrad-n0q-900913-m50m … -m05m …
+  900913` (latest), i.e. **~11 frames over the last 50 min at 5-min steps**.
+  Synthesized locally from minute offsets — **no scan listing, no clock sync** —
+  and it works **CONUS-wide at all zooms**. The animated frame stack *is* the
+  composite (the static composite layer is removed while it plays).
+- **Local (hi-res)** — animated single-site **N0B** for the nearest New England
+  site (lists scans via `radar.py?operation=list`, builds `…-N0B-{stamp}` tiles),
+  with the static composite kept underneath to fill gaps. Only renders at
+  zoom ≥ 8 and only over New England, so the UI shows a hint elsewhere.
+
+> **Why not RainViewer?** It was retired: only ~13 frames at **10-min** spacing
+> and **capped at zoom 7** — the coarsest option on every axis. The IEM 5-min
+> composite is denser, zoomable, and works everywhere, so it's strictly better
+> for smoothness. (RainViewer endpoint constants remain in the catalog for
+> reference but are no longer wired into a mode.)
 
 ### Smoothness: continuous constant-intensity crossfade (no stop-and-go)
 
@@ -167,8 +178,9 @@ differs, adjust the small parsers in `RadarCore.ts` (`localFrames` /
 2. **Static composite:** load shows the N0Q composite over New England.
 3. **Single-site:** zoom to ≥ 8 near the coast — GYX N0B layers on top; pan
    toward Boston and confirm the site swaps to BOX (with hysteresis).
-4. **Animation:** Play in Local mode (sharp local loop); zoom out and Play in
-   National mode (smooth 2 h loop). Scrub the timeline; check the timestamp.
+4. **Animation:** Play in Composite mode (smooth 50-min US loop, works anywhere);
+   over New England at zoom ≥ 8, switch to Local for the sharp single-site loop.
+   Scrub the timeline; check the timestamp.
 5. **Opacity / toggle:** slider and Radar On/Off behave.
 6. **Fallback:** to exercise it, temporarily break the IEM host and confirm the
    "using backup radar" indicator + MRMS imagery, then ⟳ to recover.

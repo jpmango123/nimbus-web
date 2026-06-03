@@ -27,6 +27,15 @@ import Foundation
 public let IEM_COMPOSITE_TILE =
     "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png"
 
+/// Animated composite frames via IEM relative-time layer names: last ~50 min in
+/// 5-min steps (`-m50m` … `-m05m`, then latest with no suffix). Primary smooth
+/// loop — CONUS-wide, all zooms, no scan listing / clock sync needed.
+public let IEM_COMPOSITE_FRAME_TILE =
+    "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913-m{OFF}m/{z}/{x}/{y}.png"
+
+/// Minutes-ago offsets for the composite loop, oldest -> newest (0 = latest).
+public let COMPOSITE_FRAME_MINUTES = [50, 45, 40, 35, 30, 25, 20, 15, 10, 5, 0]
+
 /// Single-site latest frame (the trailing `-0` is "newest"). Uses /cache/.
 public let IEM_SINGLE_LATEST_TILE =
     "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/ridge::{SITE}-N0B-0/{z}/{x}/{y}.png"
@@ -91,9 +100,12 @@ public enum RadarSourceKind: String, Sendable, Equatable {
     case mrmsWMS = "mrms-wms"
 }
 
+// 'composite' = animated 5-min IEM N0Q composite (CONUS-wide, all zooms; the
+// default smooth loop). 'local' = animated single-site N0B (New England hi-res).
+// (RainViewer 'national' was retired — coarser 10-min frames, capped at zoom 7.)
 public enum LoopMode: String, Sendable, Equatable {
     case local
-    case national
+    case composite
 }
 
 /// A renderable radar layer description. Platform adapters turn this into a
@@ -134,16 +146,22 @@ public struct RadarFrame: Sendable, Equatable {
         public let site: String
         public let stamp: String // YYYYmmddHHMM (UTC)
     }
+    public struct Composite: Sendable, Equatable {
+        public let minutesAgo: Int
+    }
     public struct National: Sendable, Equatable {
         public let host: String
         public let path: String
     }
     public let timestamp: Double
     public let single: Single?
+    public let composite: Composite?
     public let national: National?
 
-    public init(timestamp: Double, single: Single? = nil, national: National? = nil) {
-        self.timestamp = timestamp; self.single = single; self.national = national
+    public init(timestamp: Double, single: Single? = nil, composite: Composite? = nil,
+                national: National? = nil) {
+        self.timestamp = timestamp; self.single = single; self.composite = composite
+        self.national = national
     }
 }
 
@@ -242,8 +260,6 @@ public func sourcesForViewport(_ centerLat: Double, _ centerLon: Double, _ zoom:
 
 // MARK: - Frame model
 
-private let TWO_HOURS_MS = 2.0 * 60 * 60 * 1000
-
 /// Now in epoch milliseconds (UTC).
 private func nowMs() -> Double { Date().timeIntervalSince1970 * 1000 }
 
@@ -288,10 +304,18 @@ public func defaultRadarFetcher(_ url: URL) async throws -> Data {
 public func framesForLoop(_ mode: LoopMode, _ site: NexradSite,
                           fetch: RadarDataFetcher = defaultRadarFetcher) async -> [RadarFrame] {
     do {
-        return mode == .local ? try await localFrames(site, fetch)
-                              : try await nationalFrames(fetch)
+        return mode == .local ? try await localFrames(site, fetch) : compositeFrames()
     } catch {
         return []
+    }
+}
+
+/// Composite loop frames — synthesized locally from relative-time offsets
+/// (no network listing). Oldest -> newest.
+public func compositeFrames() -> [RadarFrame] {
+    let now = nowMs()
+    return COMPOSITE_FRAME_MINUTES.map { m in
+        RadarFrame(timestamp: now - Double(m) * 60_000, composite: .init(minutesAgo: m))
     }
 }
 
@@ -327,28 +351,6 @@ private func localFrames(_ site: NexradSite, _ fetch: RadarDataFetcher) async th
     return frames
 }
 
-private func nationalFrames(_ fetch: RadarDataFetcher) async throws -> [RadarFrame] {
-    guard let url = URL(string: RAINVIEWER_INDEX) else { return [] }
-    let data = try await fetch(url)
-    guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let host = obj["host"] as? String,
-          let radar = obj["radar"] as? [String: Any],
-          let past = radar["past"] as? [[String: Any]] else { return [] }
-
-    let now = nowMs()
-    var frames: [RadarFrame] = []
-    for p in past {
-        guard let path = p["path"] as? String,
-              let time = (p["time"] as? NSNumber)?.doubleValue else { continue }
-        let ts = time * 1000 // RainViewer "time" is epoch SECONDS
-        if now - ts <= TWO_HOURS_MS + 60_000 {
-            frames.append(RadarFrame(timestamp: ts, national: .init(host: host, path: path)))
-        }
-    }
-    frames.sort { $0.timestamp < $1.timestamp }
-    return frames
-}
-
 /// Resolve a source + frame to a concrete {z}/{x}/{y} tile template.
 /// Pass frame = nil to get the live "latest" template for that source.
 public func tileURL(_ source: RadarSource, _ frame: RadarFrame?) -> String {
@@ -367,7 +369,13 @@ public func tileURL(_ source: RadarSource, _ frame: RadarFrame?) -> String {
                 .replacingOccurrences(of: "{PATH}", with: n.path)
         }
         return source.urlTemplate
-    case .iemComposite, .mrmsWMS:
-        return source.urlTemplate // composite & WMS use their rolling-latest template
+    case .iemComposite:
+        if let cmp = frame?.composite, cmp.minutesAgo > 0 {
+            let off = String(format: "%02d", cmp.minutesAgo)
+            return IEM_COMPOSITE_FRAME_TILE.replacingOccurrences(of: "{OFF}", with: off)
+        }
+        return source.urlTemplate // latest (no -mNNm suffix)
+    case .mrmsWMS:
+        return source.urlTemplate // WMS uses its rolling-latest template
     }
 }
