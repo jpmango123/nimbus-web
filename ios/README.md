@@ -58,10 +58,10 @@ endpoints, **no backend, no API keys**:
    `{bbox-epsg-3857}` token** in raster source tile URLs (it does in GL JS;
    confirm on iOS). If not, render the bbox per tile yourself or fall back to the
    relative `-mNNm` XYZ tiles (50-min loop).
-2. **Local (hi-res).** Animated single-site **N0B** for the nearest New England
-   site (`framesForLoop(.local,…)` lists scans via `IEM_SCAN_LIST`, builds
-   `…-N0B-{stamp}` tiles), with the static composite kept underneath. Only at
-   **zoom ≥ 8** and only over New England — show a hint elsewhere.
+2. **Local (hi-res).** Animated single-site **N0B** for the **nearest US NEXRAD**
+   (`framesForLoop(.local,…)` lists scans via `IEM_SCAN_LIST`, builds
+   `…-N0B-{stamp}` tiles), with the static composite kept underneath. Renders at
+   **zoom ≥ 8**; show a hint if zoomed out or far from any site.
 3. **Fallback.** If IEM composite tiles repeatedly error
    (`HEALTH_FAIL_THRESHOLD`=5 within `HEALTH_FAIL_WINDOW_MS`=30 s), switch the
    CONUS source to **NOAA MRMS** (`mrmsSource()`), show a "using backup radar"
@@ -112,16 +112,16 @@ Radar on/off · opacity slider · play/pause · timeline **scrubber** (auto-paus
 seeks) · **speed slider** · loop-mode switch (**Composite** / **Local**) ·
 **dBZ legend** (the N0Q/N0B color ramp) · **attribution** ("Iowa Environmental
 Mesonet / NWS", or "NOAA / NWS MRMS" on fallback) · timestamp label in
-**device-local** time. Suggest Local only when zoomed in (≥8) near a NE site;
-don't auto-switch.
+**device-local** time. Suggest Local only when zoomed in (≥8) near a radar
+site; don't auto-switch.
 
 ## Tuned constants (already in `RadarCore.swift` — don't re-derive)
 
 `TILE_SIZE`=256 · `COMPOSITE_OPACITY`=0.75 · `SINGLE_SITE_OPACITY`=0.85 ·
 `SINGLE_SITE_MIN_ZOOM`=8 · `CROSSFADE_STEP_MS`=850 · `LAST_FRAME_PAUSE_MS`=1000 ·
 `COMPOSITE_WINDOW_MIN`=120 · `COMPOSITE_STEP_MIN`=5 · `COMPOSITE_LAG_MIN`=5 ·
-`SITE_SWITCH_HYSTERESIS_KM`=25 · health 5/30 s, cooldown 5 min. Sites: GYX
-(home/default), BOX, CBW, ENX, OKX.
+`SITE_SWITCH_HYSTERESIS_KM`=25 · health 5/30 s, cooldown 5 min. Site catalog:
+full US WSR-88D network (155 sites in `NEXRAD_SITES`); GYX is the home default.
 
 ## Lessons from the web build (avoid these traps)
 

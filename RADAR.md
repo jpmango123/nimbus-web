@@ -71,13 +71,14 @@ So the single-site layer is drawn **on top of** the composite, and **only at
 zoom ≥ 8**. The composite always stays underneath to fill the single-site's
 gaps — the single-site is **never shown alone**. The active single site is the
 nearest NEXRAD to the map center (great-circle), with **25 km hysteresis** so it
-doesn't thrash at boundaries. New England catalog: GYX (home/default), BOX, CBW,
-ENX, OKX.
+doesn't thrash at boundaries. The catalog is the full **US WSR-88D network**
+(155 sites), so the nearest radar is auto-selected anywhere in the country
+(GYX is the home default).
 
 ## Animation
 
 Two user-toggleable loop modes (the UI *suggests* Local when zoomed in near a
-New England site, otherwise Composite — but never auto-switches):
+radar site, otherwise Composite — but never auto-switches):
 
 - **Composite (smooth · US)** — the default, primary loop. Uses IEM's time-aware
   **WMS-T** composite (`n0q-t.cgi`, layer `nexrad-n0q-wmst`), which serves any
@@ -89,10 +90,10 @@ New England site, otherwise Composite — but never auto-switches):
   CONUS-wide at all zooms. The animated frame stack *is* the composite (the
   static `/cache/` composite layer is removed while it plays). The relative
   `-mNNm` form is capped at 50 min, which is why we use WMS-T for the long loop.
-- **Local (hi-res)** — animated single-site **N0B** for the nearest New England
-  site (lists scans via `radar.py?operation=list`, builds `…-N0B-{stamp}` tiles),
-  with the static composite kept underneath to fill gaps. Only renders at
-  zoom ≥ 8 and only over New England, so the UI shows a hint elsewhere.
+- **Local (hi-res)** — animated single-site **N0B** for the **nearest US NEXRAD**
+  (lists scans via `radar.py?operation=list`, builds `…-N0B-{stamp}` tiles), with
+  the static composite kept underneath to fill gaps. Renders at zoom ≥ 8; a hint
+  shows if you're not zoomed in or far from any site.
 
 > **Why not RainViewer?** It was retired: only ~13 frames at **10-min** spacing
 > and **capped at zoom 7** — the coarsest option on every axis. The IEM 5-min
@@ -179,11 +180,11 @@ differs, adjust the small parsers in `RadarCore.ts` (`localFrames` /
 ## Testing
 
 1. `npm run dev`, open `/radar` (also linked from the dashboard nav).
-2. **Static composite:** load shows the N0Q composite over New England.
+2. **Static composite:** load shows the N0Q composite (home view).
 3. **Single-site:** zoom to ≥ 8 near the coast — GYX N0B layers on top; pan
    toward Boston and confirm the site swaps to BOX (with hysteresis).
 4. **Animation:** Play in Composite mode (smooth 50-min US loop, works anywhere);
-   over New England at zoom ≥ 8, switch to Local for the sharp single-site loop.
+   at zoom ≥ 8 anywhere in the US, switch to Local for the sharp single-site loop.
    Scrub the timeline; check the timestamp.
 5. **Opacity / toggle:** slider and Radar On/Off behave.
 6. **Fallback:** to exercise it, temporarily break the IEM host and confirm the

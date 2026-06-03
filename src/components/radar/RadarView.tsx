@@ -123,9 +123,8 @@ export default function RadarView() {
   const localCoverageHint = (): string | null => {
     const { lat, lon, zoom } = view();
     const site = nearestSite(lat, lon);
-    const far = haversineKm(lat, lon, site.lat, site.lon) > 500;
-    if (far) return `Local hi-res only covers New England (nearest ${site.name}) — pan home or use Smooth · US`;
-    if (zoom < SINGLE_SITE_MIN_ZOOM) return `Local hi-res appears at zoom ≥ ${SINGLE_SITE_MIN_ZOOM} — zoom in over New England`;
+    if (haversineKm(lat, lon, site.lat, site.lon) > 500) return 'No radar site near here — use Smooth · US';
+    if (zoom < SINGLE_SITE_MIN_ZOOM) return `Local hi-res appears at zoom ≥ ${SINGLE_SITE_MIN_ZOOM} — zoom in`;
     return null;
   };
 
