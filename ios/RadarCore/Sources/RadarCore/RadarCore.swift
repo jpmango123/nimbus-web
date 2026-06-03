@@ -27,14 +27,18 @@ import Foundation
 public let IEM_COMPOSITE_TILE =
     "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png"
 
-/// Animated composite frames via IEM relative-time layer names: last ~50 min in
-/// 5-min steps (`-m50m` … `-m05m`, then latest with no suffix). Primary smooth
-/// loop — CONUS-wide, all zooms, no scan listing / clock sync needed.
-public let IEM_COMPOSITE_FRAME_TILE =
-    "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913-m{OFF}m/{z}/{x}/{y}.png"
+/// Time-aware composite (WMS-T): serves ANY 5-min UTC timestamp, so the loop can
+/// span hours (the relative `-mNNm` form is capped at 50 min). {bbox} filled by
+/// the map SDK; {TIME} = ISO8601 (YYYY-MM-DDTHH:MM:SSZ).
+public let IEM_COMPOSITE_WMST =
+    "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi?service=WMS&version=1.1.1"
+    + "&request=GetMap&layers=nexrad-n0q-wmst&styles=&bbox={bbox-epsg-3857}"
+    + "&width=256&height=256&srs=EPSG:3857&format=image/png&transparent=true&time={TIME}"
 
-/// Minutes-ago offsets for the composite loop, oldest -> newest (0 = latest).
-public let COMPOSITE_FRAME_MINUTES = [50, 45, 40, 35, 30, 25, 20, 15, 10, 5, 0]
+/// Composite loop window/step (5-min aligned). 3 h @ 15-min ≈ 13 frames.
+public let COMPOSITE_WINDOW_MIN = 180
+public let COMPOSITE_STEP_MIN = 15
+public let COMPOSITE_LAG_MIN = 5
 
 /// Single-site latest frame (the trailing `-0` is "newest"). Uses /cache/.
 public let IEM_SINGLE_LATEST_TILE =
@@ -147,7 +151,7 @@ public struct RadarFrame: Sendable, Equatable {
         public let stamp: String // YYYYmmddHHMM (UTC)
     }
     public struct Composite: Sendable, Equatable {
-        public let minutesAgo: Int
+        public let time: String // ISO8601 UTC (WMS-T TIME)
     }
     public struct National: Sendable, Equatable {
         public let host: String
@@ -310,13 +314,20 @@ public func framesForLoop(_ mode: LoopMode, _ site: NexradSite,
     }
 }
 
-/// Composite loop frames — synthesized locally from relative-time offsets
-/// (no network listing). Oldest -> newest.
+/// Composite loop frames — synthesized locally (no network listing) as 5-min
+/// aligned UTC timestamps spanning COMPOSITE_WINDOW_MIN back from ~now, in
+/// COMPOSITE_STEP_MIN steps. Oldest -> newest.
 public func compositeFrames() -> [RadarFrame] {
-    let now = nowMs()
-    return COMPOSITE_FRAME_MINUTES.map { m in
-        RadarFrame(timestamp: now - Double(m) * 60_000, composite: .init(minutesAgo: m))
+    let fiveMin = 5.0 * 60_000
+    let stepMs = Double(COMPOSITE_STEP_MIN) * 60_000
+    let newest = (((nowMs() - Double(COMPOSITE_LAG_MIN) * 60_000) / fiveMin).rounded(.down)) * fiveMin
+    let steps = COMPOSITE_WINDOW_MIN / COMPOSITE_STEP_MIN
+    var frames: [RadarFrame] = []
+    for k in stride(from: steps, through: 0, by: -1) {
+        let t = newest - Double(k) * stepMs
+        frames.append(RadarFrame(timestamp: t, composite: .init(time: isoUtc(t))))
     }
+    return frames
 }
 
 private func localFrames(_ site: NexradSite, _ fetch: RadarDataFetcher) async throws -> [RadarFrame] {
@@ -370,11 +381,10 @@ public func tileURL(_ source: RadarSource, _ frame: RadarFrame?) -> String {
         }
         return source.urlTemplate
     case .iemComposite:
-        if let cmp = frame?.composite, cmp.minutesAgo > 0 {
-            let off = String(format: "%02d", cmp.minutesAgo)
-            return IEM_COMPOSITE_FRAME_TILE.replacingOccurrences(of: "{OFF}", with: off)
+        if let cmp = frame?.composite {
+            return IEM_COMPOSITE_WMST.replacingOccurrences(of: "{TIME}", with: cmp.time)
         }
-        return source.urlTemplate // latest (no -mNNm suffix)
+        return source.urlTemplate // /cache/ XYZ latest (static live layer)
     case .mrmsWMS:
         return source.urlTemplate // WMS uses its rolling-latest template
     }

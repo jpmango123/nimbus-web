@@ -79,12 +79,15 @@ ENX, OKX.
 Two user-toggleable loop modes (the UI *suggests* Local when zoomed in near a
 New England site, otherwise Composite — but never auto-switches):
 
-- **Composite (smooth · US)** — the default, the primary smooth loop. Uses IEM's
-  built-in relative-time composite frames `nexrad-n0q-900913-m50m … -m05m …
-  900913` (latest), i.e. **~11 frames over the last 50 min at 5-min steps**.
-  Synthesized locally from minute offsets — **no scan listing, no clock sync** —
-  and it works **CONUS-wide at all zooms**. The animated frame stack *is* the
-  composite (the static composite layer is removed while it plays).
+- **Composite (smooth · US)** — the default, primary loop. Uses IEM's time-aware
+  **WMS-T** composite (`n0q-t.cgi`, layer `nexrad-n0q-wmst`), which serves any
+  5-min UTC timestamp — so the loop spans a full **3 hours** (`COMPOSITE_WINDOW_MIN`
+  = 180) in **15-min steps** (`COMPOSITE_STEP_MIN`, ≈13 frames). Long enough to
+  see real storm motion; light enough to stay a good IEM citizen. Timestamps are
+  synthesized locally (5-min aligned, small lag) — **no scan listing**. Works
+  CONUS-wide at all zooms. The animated frame stack *is* the composite (the
+  static `/cache/` composite layer is removed while it plays). The relative
+  `-mNNm` form is capped at 50 min, which is why we use WMS-T for the long loop.
 - **Local (hi-res)** — animated single-site **N0B** for the nearest New England
   site (lists scans via `radar.py?operation=list`, builds `…-N0B-{stamp}` tiles),
   with the static composite kept underneath to fill gaps. Only renders at

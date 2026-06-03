@@ -105,25 +105,26 @@ final class RadarCoreTests: XCTestCase {
 
     func testCompositeFrames() async {
         // Composite frames are synthesized locally (no network) — oldest -> newest,
-        // 11 frames over the last 50 min in 5-min steps.
+        // spanning the window in 5-min-aligned steps.
         let frames = await framesForLoop(.composite, defaultSite(), fetch: { _ in Data() })
-        XCTAssertEqual(frames.count, COMPOSITE_FRAME_MINUTES.count)
-        XCTAssertEqual(frames.first?.composite?.minutesAgo, 50)
-        XCTAssertEqual(frames.last?.composite?.minutesAgo, 0)
+        XCTAssertEqual(frames.count, COMPOSITE_WINDOW_MIN / COMPOSITE_STEP_MIN + 1)
         XCTAssertLessThan(frames.first!.timestamp, frames.last!.timestamp)
+        // window spans ~COMPOSITE_WINDOW_MIN
+        let spanMin = (frames.last!.timestamp - frames.first!.timestamp) / 60_000
+        XCTAssertEqual(spanMin, Double(COMPOSITE_WINDOW_MIN), accuracy: 0.001)
+        // timestamps are 5-min aligned
+        XCTAssertEqual(frames.last!.timestamp.truncatingRemainder(dividingBy: 5 * 60_000), 0, accuracy: 0.001)
     }
 
     func testTileURLCompositeFrame() {
         let src = compositeSource()
-        // latest (minutesAgo 0) -> base template, no -mNNm suffix
-        let latest = tileURL(src, RadarFrame(timestamp: 0, composite: .init(minutesAgo: 0)))
-        XCTAssertEqual(latest, IEM_COMPOSITE_TILE)
-        // 5 min ago -> zero-padded -m05m
-        let f5 = tileURL(src, RadarFrame(timestamp: 0, composite: .init(minutesAgo: 5)))
-        XCTAssertTrue(f5.contains("nexrad-n0q-900913-m05m"))
-        // 50 min ago -> -m50m
-        let f50 = tileURL(src, RadarFrame(timestamp: 0, composite: .init(minutesAgo: 50)))
-        XCTAssertTrue(f50.contains("nexrad-n0q-900913-m50m"))
+        // no frame -> static /cache/ XYZ latest
+        XCTAssertEqual(tileURL(src, nil), IEM_COMPOSITE_TILE)
+        // timestamped frame -> WMS-T with the TIME substituted
+        let f = tileURL(src, RadarFrame(timestamp: 0, composite: .init(time: "2026-06-03T17:00:00Z")))
+        XCTAssertTrue(f.contains("n0q-t.cgi"))
+        XCTAssertTrue(f.contains("time=2026-06-03T17:00:00Z"))
+        XCTAssertTrue(f.contains("{bbox-epsg-3857}"))
     }
 
     func testFramesGracefulOnGarbage() async {

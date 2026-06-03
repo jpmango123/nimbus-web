@@ -29,15 +29,19 @@
 export const IEM_COMPOSITE_TILE =
   'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png';
 
-/** Animated composite frames via IEM relative-time layer names: the last ~50
- *  min in 5-min steps (`nexrad-n0q-900913-m50m` … `-m05m`, then the latest with
- *  no suffix). This is the primary smooth loop — CONUS-wide, all zooms, and it
- *  needs NO scan listing or clock sync (far simpler/robuster than timestamps). */
-export const IEM_COMPOSITE_FRAME_TILE =
-  'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913-m{OFF}m/{z}/{x}/{y}.png';
+/** Time-aware composite (WMS-T): serves ANY 5-min UTC timestamp, so the loop
+ *  can span hours (the relative `-mNNm` form is capped at 50 min). {bbox} is
+ *  filled by MapLibre; {TIME} = ISO8601 (YYYY-MM-DDTHH:MM:SSZ). */
+export const IEM_COMPOSITE_WMST =
+  'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi?service=WMS&version=1.1.1' +
+  '&request=GetMap&layers=nexrad-n0q-wmst&styles=&bbox={bbox-epsg-3857}' +
+  '&width=256&height=256&srs=EPSG:3857&format=image/png&transparent=true&time={TIME}';
 
-/** Minutes-ago offsets for the composite loop, oldest -> newest (0 = latest). */
-export const COMPOSITE_FRAME_MINUTES = [50, 45, 40, 35, 30, 25, 20, 15, 10, 5, 0];
+/** Composite loop window/step (5-min aligned). 3 h @ 15-min ≈ 13 frames — long
+ *  enough to see real storm motion, light enough to be a good IEM citizen. */
+export const COMPOSITE_WINDOW_MIN = 180;
+export const COMPOSITE_STEP_MIN = 15;
+export const COMPOSITE_LAG_MIN = 5; // skip the freshest slot (may not be rendered yet)
 
 /** Single-site latest frame (the trailing `-0` is "newest"). Uses /cache/. */
 export const IEM_SINGLE_LATEST_TILE =
@@ -133,7 +137,7 @@ export interface NexradSite {
 export interface RadarFrame {
   timestamp: number;
   single?: { site: string; stamp: string }; // stamp = YYYYmmddHHMM (UTC) — local mode
-  composite?: { minutesAgo: number }; // composite mode (relative-time frame)
+  composite?: { time: string }; // ISO8601 UTC — composite mode (WMS-T TIME)
   national?: { host: string; path: string }; // retired (RainViewer); kept for reference
 }
 
@@ -303,14 +307,21 @@ export async function framesForLoop(
   }
 }
 
-/** Composite loop frames — synthesized locally from relative-time offsets
- *  (no network listing). Oldest -> newest. */
+/** Composite loop frames — synthesized locally (no network listing) as 5-min
+ *  aligned UTC timestamps spanning COMPOSITE_WINDOW_MIN back from ~now, in
+ *  COMPOSITE_STEP_MIN steps. Oldest -> newest. */
 export function compositeFrames(): RadarFrame[] {
-  const now = Date.now();
-  return COMPOSITE_FRAME_MINUTES.map((m) => ({
-    timestamp: now - m * 60_000,
-    composite: { minutesAgo: m },
-  }));
+  const fiveMin = 5 * 60_000;
+  const stepMs = COMPOSITE_STEP_MIN * 60_000;
+  // newest = now minus a small lag, floored to a 5-min boundary
+  const newest = Math.floor((Date.now() - COMPOSITE_LAG_MIN * 60_000) / fiveMin) * fiveMin;
+  const steps = Math.floor(COMPOSITE_WINDOW_MIN / COMPOSITE_STEP_MIN);
+  const frames: RadarFrame[] = [];
+  for (let k = steps; k >= 0; k--) {
+    const t = newest - k * stepMs;
+    frames.push({ timestamp: t, composite: { time: isoUtc(t) } });
+  }
+  return frames;
 }
 
 async function localFrames(site: NexradSite, fetchImpl: typeof fetch): Promise<RadarFrame[]> {
@@ -368,11 +379,10 @@ export function tileURL(source: RadarSource, frame: RadarFrame | null): string {
       }
       return source.urlTemplate;
     case 'iem-composite':
-      if (frame?.composite && frame.composite.minutesAgo > 0) {
-        const off = String(frame.composite.minutesAgo).padStart(2, '0');
-        return IEM_COMPOSITE_FRAME_TILE.replace('{OFF}', off);
+      if (frame?.composite) {
+        return IEM_COMPOSITE_WMST.replace('{TIME}', frame.composite.time);
       }
-      return source.urlTemplate; // latest (no -mNNm suffix)
+      return source.urlTemplate; // /cache/ XYZ latest (static live layer)
     case 'mrms-wms':
     default:
       return source.urlTemplate; // WMS uses its rolling-latest template
