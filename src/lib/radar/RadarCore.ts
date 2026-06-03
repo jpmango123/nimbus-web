@@ -7,7 +7,7 @@
 //   - the animation frame model (fetch timestamps, build per-frame tile URLs)
 //   - pure functions: sourcesForViewport / framesForLoop / tileURL
 //
-// KEEP IN SYNC WITH iOS Swift port:  Nimbus/Sources/Radar/RadarCore.swift
+// KEEP IN SYNC WITH iOS Swift port:  ios/RadarCore/Sources/RadarCore/RadarCore.swift
 //   The two ports are intentionally STRUCTURALLY IDENTICAL — same type names,
 //   same function names, same constants. If you change an endpoint, a site, an
 //   opacity default, or a function signature here, mirror it there in the same

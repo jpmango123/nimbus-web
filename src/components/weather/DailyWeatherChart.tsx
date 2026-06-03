@@ -274,7 +274,10 @@ export default function DailyWeatherChart({ forecasts, hourlyForecasts, unit = '
             data={chartData}
             margin={{ top: 5, right: 15, left: 15, bottom: 0 }}
             onClick={(e) => {
-              const di = e?.activePayload?.[0]?.payload?.dayIndex;
+              // Recharts v3 types onClick's arg as MouseHandlerDataParam, which
+              // doesn't surface activePayload; narrow to the shape we read.
+              const di = (e as { activePayload?: Array<{ payload?: { dayIndex?: number } }> })
+                ?.activePayload?.[0]?.payload?.dayIndex;
               if (di != null) setSelectedIdx(di);
             }}
           >

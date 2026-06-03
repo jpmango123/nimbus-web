@@ -27,9 +27,11 @@ constants** (struct/enum + async functions) so the two platforms never drift.
 The adapters (`radarMap.ts` here; `RadarMapController.swift` on iOS) contain
 **no radar business logic** — only map-SDK source/layer glue.
 
-> iOS note: only the web side was implemented in this session (the iOS app is
-> not in this repo / not reachable from this scope). `RadarCore.ts` is shaped to
-> port directly to Swift.
+> iOS note: the web side is fully implemented here. The **Swift port of
+> `RadarCore`** lives in `ios/RadarCore/` (a SwiftPM package with unit tests) —
+> see `ios/README.md`. The iOS map adapter (`RadarMapController` over MapLibre
+> Native) and controls still need to be wired up on a Mac; the iOS app itself is
+> not in this repo.
 
 ## Endpoints used (exact, no keys)
 
