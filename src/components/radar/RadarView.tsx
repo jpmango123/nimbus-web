@@ -81,6 +81,7 @@ export default function RadarView() {
   const lastTsRef = useRef(0); // performance.now() of previous tick
   const dwellUntilRef = useRef(0); // hold newest frame until this time
   const displayIdxRef = useRef(-1); // last frame index pushed to the label/scrubber
+  const speedRef = useRef(1); // playback speed multiplier (frames per CROSSFADE_STEP_MS)
   const framesRef = useRef<RadarFrame[]>([]);
   const playingRef = useRef(false);
   const loopModeRef = useRef<LoopMode>('composite');
@@ -97,6 +98,7 @@ export default function RadarView() {
   // UI state (mirrors of refs that need to render)
   const [enabled, setEnabled] = useState(true);
   const [opacity, setOpacity] = useState(1);
+  const [speed, setSpeed] = useState(1);
   const [playing, setPlaying] = useState(false);
   const [loopMode, setLoopMode] = useState<LoopMode>('composite');
   const [suggestedMode, setSuggestedMode] = useState<LoopMode>('composite');
@@ -226,11 +228,11 @@ export default function RadarView() {
     lastTsRef.current = now;
     if (now >= dwellUntilRef.current) {
       const prev = posRef.current;
-      let next = prev + dt / CROSSFADE_STEP_MS;
+      let next = prev + (dt * speedRef.current) / CROSSFADE_STEP_MS;
       if (prev < n - 1 && next >= n - 1) {
         // reached the newest frame: snap and dwell before the wrap dissolve
         next = n - 1;
-        dwellUntilRef.current = now + LAST_FRAME_PAUSE_MS;
+        dwellUntilRef.current = now + LAST_FRAME_PAUSE_MS / speedRef.current;
       } else if (next >= n) {
         next -= n; // past the wrap dissolve -> back to the oldest frame
       }
@@ -245,7 +247,7 @@ export default function RadarView() {
     const n = framesRef.current.length;
     if (fromNewest && n > 0) {
       posRef.current = n - 1;
-      dwellUntilRef.current = performance.now() + LAST_FRAME_PAUSE_MS; // hold newest first
+      dwellUntilRef.current = performance.now() + LAST_FRAME_PAUSE_MS / speedRef.current; // hold newest first
     }
     lastTsRef.current = performance.now();
     rafRef.current = requestAnimationFrame(loop);
@@ -369,6 +371,10 @@ export default function RadarView() {
     setOpacity(v);
     ctrlRef.current?.setMasterOpacity(v);
   };
+  const onSpeed = (v: number) => {
+    speedRef.current = v;
+    setSpeed(v);
+  };
   const onPlayPause = () => (playingRef.current ? pause() : play());
   const onScrub = (i: number) => {
     pause();
@@ -481,6 +487,8 @@ export default function RadarView() {
         onToggle={onToggle}
         opacity={opacity}
         onOpacity={onOpacity}
+        speed={speed}
+        onSpeed={onSpeed}
         playing={playing}
         onPlayPause={onPlayPause}
         frameCount={frameCount}

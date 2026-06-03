@@ -13,6 +13,8 @@ interface Props {
   onToggle: (v: boolean) => void;
   opacity: number;
   onOpacity: (v: number) => void;
+  speed: number;
+  onSpeed: (v: number) => void;
   playing: boolean;
   onPlayPause: () => void;
   frameCount: number;
@@ -106,6 +108,25 @@ export default function RadarControls(p: Props) {
           disabled={!p.enabled || p.frameCount === 0}
           className="w-full accent-blue-400 disabled:opacity-40"
         />
+
+        {/* Playback speed */}
+        <div className="flex items-center gap-2 text-xs text-white/60">
+          <span className="w-14">Speed</span>
+          <div className="flex flex-1 rounded-full border border-white/10 overflow-hidden">
+            {[0.25, 0.5, 1, 2, 4].map((s) => (
+              <button
+                key={s}
+                onClick={() => p.onSpeed(s)}
+                disabled={!p.enabled}
+                className={`flex-1 px-2 py-1 transition-all disabled:opacity-40 ${
+                  p.speed === s ? 'bg-blue-500/25 text-blue-200' : 'text-white/50 hover:bg-white/5'
+                }`}
+              >
+                {s}×
+              </button>
+            ))}
+          </div>
+        </div>
 
         {/* Opacity slider */}
         <div className="flex items-center gap-2 text-xs text-white/60">
