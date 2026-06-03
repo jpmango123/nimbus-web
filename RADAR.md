@@ -103,13 +103,17 @@ example, the RainViewer API example, and `weather-radar-card`):
    advances by `dt / CROSSFADE_STEP_MS` each tick (frame-rate-independent, no
    `setInterval` drift). `floor(pos)` is the frame; the fraction is the blend.
 
-**Constant-intensity crossfade:** the older frame stays fully opaque underneath
-while the newer frame fades in on top (`showFrameBlend([[i,1],[i+1,f]])`), so
-apparent brightness never dips mid-blend. At the loop point the newest frame
-fades out to reveal the oldest beneath it. React state (scrubber/label) is
-updated only on whole-frame changes, not every tick. There is a ~1 s dwell on
-the newest frame before the wrap. The scrubber auto-pauses and seeks; the
-timestamp label is the displayed frame in **device-local** time.
+**Dissolve crossfade:** the outgoing frame fades OUT (`1 - f`) while the
+incoming frame fades IN (`f`) — `showFrameBlend([[i, 1-f], [i+1, f]])`. This is
+required for perceived **motion**: holding the old frame opaque (an earlier
+attempt) freezes persistent echoes in place so storms don't appear to move (only
+the leading edge "glows"); a true dissolve lets old echoes leave and new ones
+arrive, so cells move/morph between scans. The mild brightness dip at the 50%
+blend point is the normal radar-loop look and is well worth the motion. React
+state (scrubber/label) updates only on whole-frame changes, not every tick.
+There is a ~1 s dwell on the newest frame before the wrap. The scrubber
+auto-pauses and seeks; the timestamp label is the displayed frame in
+**device-local** time.
 
 > **Honest limit:** this is a smooth *dissolve*, not true echo *motion*
 > interpolation. Making rain physically glide between scans (Windy/MyRadar

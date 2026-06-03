@@ -163,10 +163,11 @@ export default function RadarView() {
     return frames;
   };
 
-  // Render a continuous playhead position as a CONSTANT-INTENSITY crossfade:
-  // the older frame stays fully opaque underneath while the newer frame fades
-  // in on top (so apparent brightness never dips mid-blend). At the loop point
-  // the newest frame fades out to reveal the oldest beneath it.
+  // Render a continuous playhead position as a true DISSOLVE crossfade: the
+  // outgoing frame fades OUT (1 - f) while the incoming frame fades IN (f).
+  // This is essential for perceived motion — holding the old frame opaque would
+  // freeze persistent echoes in place (only edges would "glow"); fading it out
+  // lets storms actually move/morph from one scan to the next.
   const renderPos = (pos: number) => {
     const c = ctrlRef.current;
     const n = framesRef.current.length;
@@ -180,14 +181,14 @@ export default function RadarView() {
     if (i >= n) i = 0;
     if (i < n - 1) {
       c.showFrameBlend([
-        [i, 1],
+        [i, 1 - f],
         [i + 1, f],
       ]);
     } else {
       // wrap segment (newest -> oldest)
       c.showFrameBlend([
-        [0, 1],
         [n - 1, 1 - f],
+        [0, f],
       ]);
     }
     // Throttle React updates to whole-frame changes (not every rAF tick).
