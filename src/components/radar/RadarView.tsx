@@ -52,11 +52,12 @@ const BASE_STYLE: StyleSpecification = {
   sources: {
     'carto-base': {
       type: 'raster',
-      tiles: cartoTiles('dark_nolabels'),
+      // TEMP: bright Voyager base to make it obvious whether the map paints.
+      tiles: cartoTiles('rastertiles/voyager_nolabels'),
       tileSize: 256,
       attribution: '© OpenStreetMap contributors © CARTO',
     },
-    'carto-labels': { type: 'raster', tiles: cartoTiles('dark_only_labels'), tileSize: 256 },
+    'carto-labels': { type: 'raster', tiles: cartoTiles('rastertiles/voyager_only_labels'), tileSize: 256 },
   },
   layers: [
     { id: 'bg', type: 'background', paint: { 'background-color': '#0d1521' } },
@@ -414,10 +415,15 @@ export default function RadarView() {
         enterLive();
         // resize insurance (in case the container sized after init)
         map.resize();
+        map.triggerRepaint();
         reportSize();
-        requestAnimationFrame(() => map?.resize());
+        requestAnimationFrame(() => {
+          map?.resize();
+          map?.triggerRepaint();
+        });
         setTimeout(() => {
           map?.resize();
+          map?.triggerRepaint();
           reportSize();
         }, 600);
       });

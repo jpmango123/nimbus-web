@@ -9,7 +9,7 @@ import RadarView from '@/components/radar/RadarView';
 
 export default function RadarPage() {
   return (
-    <main className="flex h-[100dvh] flex-col">
+    <main className="fixed inset-0 flex flex-col">
       {/* Slim header (kept short so the map gets the screen) */}
       <nav className="flex items-center justify-between border-b border-white/5 bg-[#0d1521]/80 px-4 py-2 backdrop-blur-xl">
         <Link href="/" className="text-sm font-semibold">
