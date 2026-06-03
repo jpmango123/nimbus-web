@@ -107,6 +107,11 @@ export default function RadarView() {
   const [status, setStatus] = useState<string | null>(null);
   const [timestampLabel, setTimestampLabel] = useState('—');
 
+  // TEMP debug HUD state (remove once the blank-map issue is resolved)
+  const [dbg, setDbg] = useState({ loaded: false, cw: 0, ch: 0, tiles: 0, errs: [] as string[] });
+  const tilesRef = useRef(0);
+  const errsRef = useRef<string[]>([]);
+
   // -- helpers (read live map state via refs; no React deps) -----------------
 
   const view = () => {
@@ -380,27 +385,60 @@ export default function RadarView() {
       const maplibregl = (await import('maplibre-gl')).default;
       if (cancelled || !containerRef.current) return;
       const home = defaultSite();
-      map = new maplibregl.Map({
-        container: containerRef.current,
-        style: BASE_STYLE,
-        center: [home.lon, home.lat],
-        zoom: 7,
-        maxZoom: 12,
-        attributionControl: { compact: true },
-      });
+      try {
+        map = new maplibregl.Map({
+          container: containerRef.current,
+          style: BASE_STYLE,
+          center: [home.lon, home.lat],
+          zoom: 7,
+          maxZoom: 12,
+          attributionControl: { compact: true },
+        });
+      } catch (err) {
+        errsRef.current = [...errsRef.current, `init: ${String(err)}`].slice(-6);
+        setDbg((d) => ({ ...d, errs: errsRef.current }));
+        return;
+      }
       mapRef.current = map;
       map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+
+      const reportSize = () => {
+        const cv = map?.getCanvas();
+        if (cv) setDbg((d) => ({ ...d, loaded: true, cw: cv.clientWidth, ch: cv.clientHeight }));
+      };
 
       map.on('load', () => {
         if (!map) return;
         ctrlRef.current = new RadarMapController(map);
         ctrlRef.current.setMasterOpacity(1);
         enterLive();
+        // resize insurance (in case the container sized after init)
+        map.resize();
+        reportSize();
+        requestAnimationFrame(() => map?.resize());
+        setTimeout(() => {
+          map?.resize();
+          reportSize();
+        }, 600);
       });
 
-      // Health check: count IEM tile errors (composite / single-site / local frames).
+      // TEMP: count loaded raster tiles for the debug HUD.
+      map.on('data', (e: unknown) => {
+        const ev = e as { tile?: unknown; dataType?: string };
+        if (ev?.tile && ev?.dataType === 'source') {
+          tilesRef.current += 1;
+          setDbg((d) => ({ ...d, tiles: tilesRef.current }));
+        }
+      });
+
       map.on('error', (e: unknown) => {
-        const sid = (e as MapErrorEvent)?.sourceId;
+        const ev = e as MapErrorEvent & { error?: { message?: string } };
+        // TEMP: surface the message on the HUD
+        const msg = `${ev?.sourceId ? ev.sourceId + ': ' : ''}${ev?.error?.message ?? 'error'}`;
+        errsRef.current = [...errsRef.current, msg].slice(-6);
+        setDbg((d) => ({ ...d, errs: errsRef.current }));
+        // Health check: count IEM tile errors (composite / single-site / local frames).
+        const sid = ev?.sourceId;
         if (!sid) return;
         const isIem =
           sid.startsWith('radar-composite-iem') ||
@@ -454,6 +492,17 @@ export default function RadarView() {
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="absolute inset-0" />
+      {/* TEMP debug HUD — remove once the blank-map issue is resolved */}
+      <div className="absolute left-2 top-2 z-20 max-w-[80%] rounded bg-black/70 p-2 font-mono text-[10px] leading-tight text-white/80">
+        <div>
+          loaded:{String(dbg.loaded)} canvas:{dbg.cw}×{dbg.ch} tiles:{dbg.tiles}
+        </div>
+        {dbg.errs.map((e, i) => (
+          <div key={i} className="break-all text-red-300">
+            {e}
+          </div>
+        ))}
+      </div>
       <RadarControls
         enabled={enabled}
         onToggle={onToggle}
