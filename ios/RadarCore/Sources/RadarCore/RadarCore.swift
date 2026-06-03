@@ -35,9 +35,10 @@ public let IEM_COMPOSITE_WMST =
     + "&request=GetMap&layers=nexrad-n0q-wmst&styles=&bbox={bbox-epsg-3857}"
     + "&width=256&height=256&srs=EPSG:3857&format=image/png&transparent=true&time={TIME}"
 
-/// Composite loop window/step (5-min aligned). 3 h @ 15-min ≈ 13 frames.
-public let COMPOSITE_WINDOW_MIN = 180
-public let COMPOSITE_STEP_MIN = 15
+/// Composite loop window/step (5-min aligned). 5-min = IEM native cadence (the
+/// smoothest the data allows). 2 h @ 5-min ≈ 25 frames.
+public let COMPOSITE_WINDOW_MIN = 120
+public let COMPOSITE_STEP_MIN = 5
 public let COMPOSITE_LAG_MIN = 5
 
 /// Single-site latest frame (the trailing `-0` is "newest"). Uses /cache/.

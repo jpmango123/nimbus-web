@@ -37,10 +37,12 @@ export const IEM_COMPOSITE_WMST =
   '&request=GetMap&layers=nexrad-n0q-wmst&styles=&bbox={bbox-epsg-3857}' +
   '&width=256&height=256&srs=EPSG:3857&format=image/png&transparent=true&time={TIME}';
 
-/** Composite loop window/step (5-min aligned). 3 h @ 15-min ≈ 13 frames — long
- *  enough to see real storm motion, light enough to be a good IEM citizen. */
-export const COMPOSITE_WINDOW_MIN = 180;
-export const COMPOSITE_STEP_MIN = 15;
+/** Composite loop window/step (5-min aligned). 5-min is IEM's native cadence —
+ *  the smoothest the data allows (no jumpy gaps). 2 h @ 5-min ≈ 25 frames:
+ *  smooth, with plenty of storm motion. (Tune here: bigger window = more
+ *  history but slower preload / more WMS load.) */
+export const COMPOSITE_WINDOW_MIN = 120;
+export const COMPOSITE_STEP_MIN = 5;
 export const COMPOSITE_LAG_MIN = 5; // skip the freshest slot (may not be rendered yet)
 
 /** Single-site latest frame (the trailing `-0` is "newest"). Uses /cache/. */

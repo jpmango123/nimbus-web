@@ -81,9 +81,10 @@ New England site, otherwise Composite — but never auto-switches):
 
 - **Composite (smooth · US)** — the default, primary loop. Uses IEM's time-aware
   **WMS-T** composite (`n0q-t.cgi`, layer `nexrad-n0q-wmst`), which serves any
-  5-min UTC timestamp — so the loop spans a full **3 hours** (`COMPOSITE_WINDOW_MIN`
-  = 180) in **15-min steps** (`COMPOSITE_STEP_MIN`, ≈13 frames). Long enough to
-  see real storm motion; light enough to stay a good IEM citizen. Timestamps are
+  5-min UTC timestamp. The loop spans **2 hours** (`COMPOSITE_WINDOW_MIN` = 120)
+  in **5-min steps** (`COMPOSITE_STEP_MIN`, ≈25 frames). 5-min is IEM's native
+  cadence — the smoothest the data allows (small gaps = no jumpy teleporting);
+  the window balances history vs. preload/WMS load. Timestamps are
   synthesized locally (5-min aligned, small lag) — **no scan listing**. Works
   CONUS-wide at all zooms. The animated frame stack *is* the composite (the
   static `/cache/` composite layer is removed while it plays). The relative

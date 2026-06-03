@@ -261,7 +261,7 @@ export default function RadarView() {
       const started = Date.now();
       const tick = () => {
         if (!playingRef.current) return resolve(); // user paused while preloading
-        if (m.areTilesLoaded() || Date.now() - started > 12000) return resolve();
+        if (m.areTilesLoaded() || Date.now() - started > 20000) return resolve();
         setTimeout(tick, 200);
       };
       setTimeout(tick, 300); // let tile requests start before first check
